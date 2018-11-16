@@ -29,7 +29,7 @@ proc define_sta_cmds {} {
   foreach cmd [array names sta_cmd_args] {
     define_cmd_args $cmd $sta_cmd_args($cmd)
   }
-  define_report_path_fields
+#   define_report_path_fields
 }
 
 proc define_report_path_fields {} {
