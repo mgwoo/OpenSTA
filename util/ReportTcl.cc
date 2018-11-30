@@ -308,10 +308,25 @@ ReportTcl::printErrorConsole(const char *buffer, size_t length)
   return printTcl(tcl_stderr_, buffer, length);
 }
 
+
+constexpr int c_strcmp( char const* lhs, char const* rhs ) 
+{
+  return (('\0' == lhs[0]) && ('\0' == rhs[0])) ? 0
+    :  (lhs[0] != rhs[0]) ? (lhs[0] - rhs[0])
+    : c_strcmp( lhs+1, rhs+1 );
+}
+
+#define __TCL_VERSION_84__ "8.4" 
+
 size_t
 ReportTcl::printTcl(Tcl_Channel channel, const char *buffer, size_t length)
 {
+  constexpr int tclVersionCompare = c_strcmp( TCL_VERSION, __TCL_VERSION_84__ );
+#if 0 == tclVersionCompare 
+  Tcl_ChannelType *ch_type = Tcl_GetChannelType(channel);
+#else
   const Tcl_ChannelType *ch_type = Tcl_GetChannelType(channel);
+#endif
   Tcl_DriverOutputProc *output_proc = Tcl_ChannelOutputProc(ch_type);
   int error_code;
   ClientData clientData = Tcl_GetChannelInstanceData(channel);
