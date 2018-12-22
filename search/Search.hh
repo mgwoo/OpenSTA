@@ -51,7 +51,7 @@ class WorstSlacks;
 class DcalcAnalysisPt;
 class VisitPathEnds;
 class GatedClk;
-class Crpr;
+class CheckCrpr;
 class Genclks;
 class Corner;
 
@@ -59,6 +59,8 @@ typedef Set<ClkInfo*, ClkInfoLess> ClkInfoSet;
 typedef HashSet<Tag*, TagHash, TagEqual> TagHashSet;
 typedef HashSet<TagGroup*, TagGroupHash, TagGroupEqual> TagGroupSet;
 typedef Map<Vertex*, Slack> VertexSlackMap;
+typedef Vector<VertexSlackMap> VertexSlackMapSeq;
+typedef Vector<WorstSlacks> WorstSlacksSeq;
 
 class Search : public StaState
 {
@@ -68,6 +70,11 @@ public:
   virtual void copyState(const StaState *sta);
   // Reset to virgin state.
   void clear();
+  // When enabled, non-critical path arrivals are pruned to improve
+  // run time and reduce memory. The side-effect is that slacks for
+  // non-critical paths on intermediate pins may be incorrect.
+  bool crprPathPruningEnabled() const;
+  void setCrprpathPruningEnabled(bool enabled);
   // Report unconstrained paths.
   bool reportUnconstrainedPaths() const { return report_unconstrained_paths_; }
   void setReportUnconstrainedPaths(bool report);
@@ -119,11 +126,22 @@ public:
   void findRequireds(Level level);
   bool requiredsSeeded() const { return requireds_seeded_; }
   bool requiredsExist() const { return requireds_exist_; }
+  // The sum of all negative endpoints slacks.
+  // Incrementally updated.
   Slack totalNegativeSlack(const MinMax *min_max);
-  // Worst endpoint slack.
-  Slack worstSlack(const MinMax *min_max);
-  // Worst endpoint slack vertex.
-  Vertex *worstSlackVertex(const MinMax *min_max);
+  Slack totalNegativeSlack(const Corner *corner,
+			   const MinMax *min_max);
+  // Worst endpoint slack and vertex.
+  // Incrementally updated.
+  void worstSlack(const MinMax *min_max,
+		  // Return values.
+		  Slack &worst_slack,
+		  Vertex *&worst_vertex);
+  void worstSlack(const Corner *corner,
+		  const MinMax *min_max,
+		  // Return values.
+		  Slack &worst_slack,
+		  Vertex *&worst_vertex);
   // Clock arrival respecting ideal clock insertion delay and latency.
   Arrival clkPathArrival(const Path *clk_path) const;
   Arrival clkPathArrival(const Path *clk_path,
@@ -132,7 +150,7 @@ public:
 			 const MinMax *min_max,
 			 const PathAnalysisPt *path_ap) const;
   // Clock arrival at the path source/launch point.
-  float pathClkPathArrival(const Path *path) const;
+  Arrival pathClkPathArrival(const Path *path) const;
 
   PathGroup *pathGroup(const PathEnd *path_end) const;
   void deletePathGroups();
@@ -308,7 +326,7 @@ public:
   TagGroup *tagGroup(TagGroupIndex index) const;
   void reportArrivals(Vertex *vertex) const;
   Slack wnsSlack(Vertex *vertex,
-		    const MinMax *min_max);
+		 PathAPIndex path_ap_index);
   void levelChangedBefore(Vertex *vertex);
   void seedInputArrival(const Pin *pin,
  			Vertex *vertex,
@@ -321,7 +339,7 @@ public:
   virtual bool checkDefaultArrivalPaths() { return true; }
   bool matchesFilter(Path *path,
 		     const ClockEdge *to_clk_edge);
-  Crpr *crpr() { return crpr_; }
+  CheckCrpr *checkCrpr() { return check_crpr_; }
   VisitPathEnds *visitPathEnds() { return visit_path_ends_; }
   GatedClk *gatedClk() { return gated_clk_; }
   Genclks *genclks() { return genclks_; }
@@ -466,24 +484,25 @@ protected:
   void deleteFilterTagGroups();
   void deleteFilterClkInfos();
 
+  void tnsPreamble();
   void findTotalNegativeSlacks();
   void updateInvalidTns();
   void clearWorstSlack();
   void wnsSlacks(Vertex *vertex,
 		 // Return values.
-		 Slack *slacks);
+		 SlackSeq &slacks);
   void wnsTnsPreamble();
   void worstSlackPreamble();
   void deleteWorstSlacks();
   void updateWorstSlacks(Vertex *vertex,
-			 Slack *slacks);
+			 Slack slacks);
   void updateTns(Vertex *vertex,
-		 Slack *slacks);
+		 SlackSeq &slacks);
   void tnsIncr(Vertex *vertex,
-	       float slack,
-	       int min_max_index);
+	       Slack slack,
+	       PathAPIndex path_ap_index);
   void tnsDecr(Vertex *vertex,
-	       int min_max_index);
+	       PathAPIndex path_ap_index);
   void tnsNotifyBefore(Vertex *vertex);
   PathGroups *makePathGroups(int group_count,
 			     int endpoint_count,
@@ -534,9 +553,12 @@ protected:
   bool tns_exists_;
   // Endpoint vertices with slacks that have changed since tns was found.
   VertexSet invalid_tns_;
-  double tns_[MinMax::index_count];
-  VertexSlackMap tns_slacks_[MinMax::index_count];
+  // Indexed by path_ap->index().
+  SlackSeq tns_;
+  // Indexed by path_ap->index().
+  VertexSlackMapSeq tns_slacks_;
   mutable Mutex tns_lock_;
+  // Indexed by path_ap->index().
   WorstSlacks *worst_slacks_;
   // Use pointer to clk_info set so Tag.hh does not need to be included.
   ClkInfoSet *clk_info_set_;
@@ -570,7 +592,8 @@ protected:
   PathGroups *path_groups_;
   VisitPathEnds *visit_path_ends_;
   GatedClk *gated_clk_;
-  Crpr *crpr_;
+  CheckCrpr *check_crpr_;
+  bool crpr_path_pruning_enabled_;
   Genclks *genclks_;
 };
 

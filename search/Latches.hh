@@ -44,7 +44,7 @@ public:
 		     const PathVertex *disable_path,
 		     MultiCyclePath *mcp,
 		     PathDelay *path_delay,
-		     float src_clk_latency,
+		     Arrival src_clk_latency,
 		     const ArcDelay &margin,
 		     // Return values.
 		     Required &required,
@@ -70,8 +70,8 @@ public:
 		       Delay &open_latency,
 		       Delay &latency_diff,
 		       float &open_uncertainty,
-		       float &open_crpr,
-		       float &crpr_diff,
+		       Crpr &open_crpr,
+		       Crpr &crpr_diff,
 		       Delay &max_borrow,
 		       bool &borrow_limit_exists);
   bool isLatchDtoQ(Edge *edge) const;

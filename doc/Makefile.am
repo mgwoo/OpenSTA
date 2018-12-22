@@ -18,8 +18,8 @@ EXTRA_DIST = \
 	ApiChanges.txt \
 	BugLog \
 	CodingGuidelines.txt \
-	Sta.odt \
-	Sta.pdf \
+	OpenSTA.odt \
+	OpenSTA.pdf \
 	StaApi.txt
 
 libs:

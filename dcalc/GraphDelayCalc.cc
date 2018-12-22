@@ -72,6 +72,14 @@ GraphDelayCalc::loadCap(const Pin *,
 
 float
 GraphDelayCalc::loadCap(const Pin *,
+			const TransRiseFall *,
+			const DcalcAnalysisPt *) const
+{
+  return 0.0F;
+}
+
+float
+GraphDelayCalc::loadCap(const Pin *,
 			Parasitic *,
 			const TransRiseFall *,
 			const DcalcAnalysisPt *) const
@@ -91,6 +99,14 @@ GraphDelayCalc::netCaps(const Pin *,
 {
   pin_cap = wire_cap = fanout = 0.0F;
   has_set_load = false;
+}
+
+float
+GraphDelayCalc::ceff(Edge *,
+		     TimingArc *,
+		     const DcalcAnalysisPt *)
+{
+  return 0.0;
 }
 
 void

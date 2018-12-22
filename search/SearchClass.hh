@@ -110,13 +110,15 @@ typedef Vector<Arrival> ArrivalSeq;
 typedef Map<Vertex*, int> VertexPathCountMap;
 typedef UnorderedMap<Tag*, int, TagMatchHash, TagMatchEqual> ArrivalMap;
 typedef Vector<PathVertex> PathVertexSeq;
+typedef Vector<Slack> SlackSeq;
+typedef Delay Crpr;
 
 typedef enum {
   report_path_full,
   report_path_full_clock,
   report_path_full_clock_expanded,
   report_path_short,
-  report_path_end,
+  report_path_endpoint,
   report_path_summary,
   report_path_slack_only
 } ReportPathFormat;

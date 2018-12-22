@@ -227,10 +227,11 @@ Search::Search(StaState *sta) :
 void
 Search::init(StaState *sta)
 {
+  crpr_path_pruning_enabled_ = true;
   report_unconstrained_paths_ = false;
   search_adj_ = new SearchThru(NULL, sta);
   eval_pred_ = new EvalPred(sta);
-  crpr_ = new Crpr(sta);
+  check_crpr_ = new CheckCrpr(sta);
   genclks_ = new Genclks(sta);
   arrival_visitor_ = new ArrivalVisitor(sta);
   clk_arrivals_valid_ = false;
@@ -283,7 +284,7 @@ Search::~Search()
   delete visit_path_ends_;
   delete gated_clk_;
   delete worst_slacks_;
-  delete crpr_;
+  delete check_crpr_;
   delete genclks_;
   deleteFilter();
   deletePathGroups();
@@ -292,6 +293,7 @@ Search::~Search()
 void
 Search::clear()
 {
+  crpr_path_pruning_enabled_ = true;
   clk_arrivals_valid_ = false;
   arrivals_exist_ = false;
   arrivals_at_endpoints_exist_ = false;
@@ -313,6 +315,18 @@ Search::clear()
   deleteFilter();
   genclks_->clear();
   found_downstream_clk_pins_ = false;
+}
+
+bool
+Search::crprPathPruningEnabled() const
+{
+  return crpr_path_pruning_enabled_;
+}
+
+void
+Search::setCrprpathPruningEnabled(bool enabled)
+{
+  crpr_path_pruning_enabled_ = enabled;
 }
 
 void
@@ -365,7 +379,7 @@ Search::copyState(const StaState *sta)
   required_iter_->copyState(sta);
   visit_path_ends_->copyState(sta);
   gated_clk_->copyState(sta);
-  crpr_->copyState(sta);
+  check_crpr_->copyState(sta);
   genclks_->copyState(sta);
 }
 
@@ -1086,9 +1100,9 @@ ArrivalVisitor::visit(Vertex *vertex)
 
     visitFaninPaths(vertex);
     if (crpr_active_
+	&& search->crprPathPruningEnabled()
 	&& !has_fanin_one_)
       pruneCrprArrivals();
-
     // Insert paths that originate here but 
     if (!network->isTopLevelPort(pin)
 	&& sdc->hasInputDelay(pin))
@@ -1286,7 +1300,7 @@ ArrivalVisitor::pruneCrprArrivals()
 {
   const Debug *debug = sta_->debug();
   ArrivalMap::Iterator arrival_iter(tag_bldr_->arrivalMap());
-  Crpr *crpr = sta_->search()->crpr();
+  CheckCrpr *crpr = sta_->search()->checkCrpr();
   while (arrival_iter.hasNext()) {
     Tag *tag;
     int arrival_index;
@@ -1538,11 +1552,11 @@ Search::seedClkArrival(const Pin *pin,
   bool latency_exists;
   // Check for clk pin latency.
   sdc_->clockLatency(clk, pin, tr, min_max,
-			     latency, latency_exists);
+		     latency, latency_exists);
   if (!latency_exists) {
     // Check for clk latency (lower priority).
     sdc_->clockLatency(clk, tr, min_max,
-			       latency, latency_exists);
+		       latency, latency_exists);
     if (latency_exists) {
       // Propagated pin overrides latency on clk.
       if (sdc_->isPropagatedClock(pin)) {
@@ -1712,8 +1726,7 @@ Search::seedInputArrival(const Pin *pin,
 {
   bool has_arrival = false;
   // There can be multiple arrivals for a pin with wrt different clocks.
-  PinInputDelayIterator *arrival_iter =
-    sdc_->inputDelayVertexIterator(pin);
+  PinInputDelayIterator *arrival_iter = sdc_->inputDelayVertexIterator(pin);
   TagGroupBldr tag_bldr(true, this);
   tag_bldr.init(vertex);
   while (arrival_iter->hasNext()) {
@@ -1762,8 +1775,7 @@ Search::seedInputArrival1(const Pin *pin,
 			  TagGroupBldr *tag_bldr)
 {
   // There can be multiple arrivals for a pin with wrt different clocks.
-  PinInputDelayIterator *arrival_iter=
-    sdc_->inputDelayVertexIterator(pin);
+  PinInputDelayIterator *arrival_iter = sdc_->inputDelayVertexIterator(pin);
   while (arrival_iter->hasNext()) {
     InputDelay *input_delay = arrival_iter->next();
     Clock *input_clk = input_delay->clock();
@@ -1864,8 +1876,7 @@ Search::inputDelayRefPinArrival(Path *ref_path,
     const EarlyLate *early_late = min_max;
     // Input delays from ideal clk reference pins include clock
     // insertion delay but not latency.
-    ref_insertion = sdc_->clockInsertion(clk, clk_tr, min_max,
-						 early_late);
+    ref_insertion = sdc_->clockInsertion(clk, clk_tr, min_max, early_late);
     ref_arrival = clk_edge->time() + ref_insertion;
     ref_latency = 0.0;
   }
@@ -2311,7 +2322,7 @@ Search::clkPathArrival(const Path *clk_path,
     return clk_path->arrival(this);
 }
 
-float
+Arrival
 Search::pathClkPathArrival(const Path *path) const
 {
   PathRef src_clk_path;
@@ -2392,7 +2403,7 @@ Search::fromRegClkTag(const Pin *from_pin,
 {
   ExceptionStateSet *states = NULL;
   if (sdc_->exceptionFromStates(from_pin, from_tr, clk, clk_tr,
-					min_max, states)) {
+				min_max, states)) {
     // Hack for filter -from reg/Q.
     sdc_->filterRegQStates(to_pin, to_tr, min_max, states);
     return findTag(to_tr, path_ap, clk_info, false, NULL, false, states, true);
@@ -2535,7 +2546,7 @@ Search::thruClkInfo(PathVertex *from_path,
   float latency;
   bool exists;
   sdc_->clockLatency(from_clk, to_pin, clk_tr, min_max,
-			     latency, exists);
+		     latency, exists);
   if (exists) {
     // Latency on pin has precidence over fanin or hierarchical
     // pin latency.
@@ -2546,7 +2557,7 @@ Search::thruClkInfo(PathVertex *from_path,
   else {
     // Check for hierarchical pin latency thru edge.
     sdc_->clockLatency(edge, clk_tr, min_max,
-			       latency, exists);
+		       latency, exists);
     if (exists) {
       to_latency = latency;
       to_clk_prop = false;
@@ -2618,8 +2629,7 @@ Search::mutateTag(Tag *from_tag,
       }
     }
     // Get the set of -thru exceptions starting at to_pin/edge.
-    sdc_->exceptionThruStates(from_pin, to_pin, to_tr, min_max,
-				      new_states);
+    sdc_->exceptionThruStates(from_pin, to_pin, to_tr, min_max, new_states);
     if (new_states || state_change) {
       // Second pass to apply state changes and add updated existing
       // states to new states.
@@ -2659,8 +2669,7 @@ Search::mutateTag(Tag *from_tag,
   }
   else
     // Get the set of -thru exceptions starting at to_pin/edge.
-    sdc_->exceptionThruStates(from_pin, to_pin, to_tr, min_max,
-				      new_states);
+    sdc_->exceptionThruStates(from_pin, to_pin, to_tr, min_max, new_states);
 
   if (new_states)
     return findTag(to_tr, path_ap, to_clk_info, to_is_clk,
@@ -2804,7 +2813,7 @@ Search::reportArrivals(Vertex *vertex) const
       report_->print(" %s", tag->asString(this));
       if (tag_group->hasClkTag()) {
 	PathVertex tmp;
-	PathVertex *prev = crpr_->clkPathPrev(vertex, arrival_index, tmp);
+	PathVertex *prev = check_crpr_->clkPathPrev(vertex, arrival_index, tmp);
 	report_->print(" clk_prev=[%s]",
 		       prev && !prev->isNull() ? prev->name(this) : "NULL");
       }
@@ -3043,7 +3052,7 @@ Search::deratedDelay(Vertex *from_vertex,
   DcalcAPIndex ap_index = dcalc_ap->index();
   float derate = timingDerate(from_vertex, arc, edge, is_clk, path_ap);
   ArcDelay delay = graph_->arcDelay(edge, arc, ap_index);
-  return delay + Delay((derate - 1.0) * delayAsFloat(delay));
+  return delay * derate;
 }
 
 float
@@ -3058,8 +3067,8 @@ Search::timingDerate(Vertex *from_vertex,
   const Pin *pin = from_vertex->pin();
   if (role->isWire()) {
     const TransRiseFall *tr = arc->toTrans()->asRiseFall();
-    return sdc_->timingDerateNet(pin, derate_clk_data,
-					 tr, path_ap->pathMinMax());
+    return sdc_->timingDerateNet(pin, derate_clk_data, tr,
+				 path_ap->pathMinMax());
   }
   else {
     TimingDerateType derate_type;
@@ -3072,9 +3081,8 @@ Search::timingDerate(Vertex *from_vertex,
        derate_type = timing_derate_cell_delay;
        tr = arc->fromTrans()->asRiseFall();
     }
-    return sdc_->timingDerateInstance(pin, derate_type,
-					      derate_clk_data, tr,
-					      path_ap->pathMinMax());
+    return sdc_->timingDerateInstance(pin, derate_type, derate_clk_data, tr,
+				      path_ap->pathMinMax());
   }
 }
 
@@ -3536,12 +3544,13 @@ RequiredVisitor::visitFromToPath(const Pin *,
       VertexPathIterator to_iter(to_vertex, to_tr, path_ap, sta_);
       while (to_iter.hasNext()) {
 	PathVertex *to_path = to_iter.next();
-	if (tagMatchNoCrpr(to_path->tag(sta_), to_tag)) {
+	Tag *to_path_tag = to_path->tag(sta_);
+	if (tagMatchNoCrpr(to_path_tag, to_tag)) {
 	  Required to_required = to_path->required(sta_);
 	  Required from_required = to_required - arc_delay;
 	  debugPrint2(debug, "search", 3, "  to tag   %2u: %s\n",
-		      to_tag->index(),
-		      to_tag->asString(sta_));
+		      to_path_tag->index(),
+		      to_path_tag->asString(sta_));
 	  debugPrint5(debug, "search", 3, "  %s - %s = %s %s %s\n",
 		      delayAsString(to_required, sta_),
 		      delayAsString(arc_delay, sta_),
@@ -3676,7 +3685,7 @@ Search::exceptionTo(ExceptionPathType type,
       if ((type == exception_type_any
 	   || exception->type() == type)
 	  && sdc_->isCompleteTo(state, pin, tr, clk_edge, min_max,
-					match_min_max_exactly, require_to_pin)
+				match_min_max_exactly, require_to_pin)
 	  && (hi_priority_exception == NULL
 	      || priority > hi_priority
 	      || (priority == hi_priority
@@ -3698,12 +3707,39 @@ Search::exceptionTo(ExceptionPathType type,
 Slack
 Search::totalNegativeSlack(const MinMax *min_max)
 {
+  tnsPreamble();
+  Slack tns = 0.0;
+  CornerIterator corner_iter(this);
+  while (corner_iter.hasNext()) {
+    Corner *corner = corner_iter.next();
+    PathAPIndex path_ap_index = corner->findPathAnalysisPt(min_max)->index();
+    Slack tns1 = tns_[path_ap_index];
+    if (tns1 < tns)
+      tns = tns1;
+  }
+  return tns;
+}
+
+Slack
+Search::totalNegativeSlack(const Corner *corner,
+			   const MinMax *min_max)
+{
+  tnsPreamble();
+  PathAPIndex path_ap_index = corner->findPathAnalysisPt(min_max)->index();
+  return tns_[path_ap_index];
+}
+
+void
+Search::tnsPreamble()
+{
   wnsTnsPreamble();
+  PathAPIndex path_ap_count = corners_->pathAnalysisPtCount();
+  tns_.resize(path_ap_count);
+  tns_slacks_.resize(path_ap_count);
   if (tns_exists_)
     updateInvalidTns();
   else
     findTotalNegativeSlacks();
-  return static_cast<Slack>(tns_[min_max->index()]);
 }
 
 void
@@ -3722,6 +3758,7 @@ Search::tnsInvalid(Vertex *vertex)
 void
 Search::updateInvalidTns()
 {
+  PathAPIndex path_ap_count = corners_->pathAnalysisPtCount();
   VertexSet::Iterator vertex_iter(invalid_tns_);
   while (vertex_iter.hasNext()) {
     Vertex *vertex = vertex_iter.next();
@@ -3729,7 +3766,7 @@ Search::updateInvalidTns()
     if (isEndpoint(vertex)) {
       debugPrint1(debug_, "tns", 2, "update tns %s\n",
 		  vertex->name(sdc_network_));
-      Slack slacks[MinMax::index_count];
+      SlackSeq slacks(path_ap_count);
       wnsSlacks(vertex, slacks);
 
       if (tns_exists_)
@@ -3744,67 +3781,64 @@ Search::updateInvalidTns()
 void
 Search::findTotalNegativeSlacks()
 {
-  int min_index = MinMax::minIndex();
-  int max_index = MinMax::maxIndex();
-  tns_[min_index] = 0.0;
-  tns_[max_index] = 0.0;
-  tns_slacks_[min_index].clear();
-  tns_slacks_[max_index].clear();
+  PathAPIndex path_ap_count = corners_->pathAnalysisPtCount();
+  for (PathAPIndex i = 0; i < path_ap_count; i++) {
+    tns_[i] = 0.0;
+    tns_slacks_[i].clear();
+  }
   VertexSet::Iterator end_iter(endpoints());
   while (end_iter.hasNext()) {
     Vertex *vertex = end_iter.next();
     // No locking required.
-    Slack slacks[MinMax::index_count];
+    SlackSeq slacks(path_ap_count);
     wnsSlacks(vertex, slacks);
-    tnsIncr(vertex, delayAsFloat(slacks[min_index]), min_index);
-    tnsIncr(vertex, delayAsFloat(slacks[max_index]), max_index);
+    for (PathAPIndex i = 0; i < path_ap_count; i++)
+      tnsIncr(vertex, slacks[i], i);
   }
   tns_exists_ = true;
 }
 
 void
 Search::updateTns(Vertex *vertex,
-		  Slack *slacks)
+		  SlackSeq &slacks)
 {
-  int min_index = MinMax::minIndex();
-  int max_index = MinMax::maxIndex();
-  tnsDecr(vertex, min_index);
-  tnsIncr(vertex, delayAsFloat(slacks[min_index]), min_index);
-
-  tnsDecr(vertex, max_index);
-  tnsIncr(vertex, delayAsFloat(slacks[max_index]), max_index);
+  PathAPIndex path_ap_count = corners_->pathAnalysisPtCount();
+  for (PathAPIndex i = 0; i < path_ap_count; i++) {
+    tnsDecr(vertex, i);
+    tnsIncr(vertex, slacks[i], i);
+  }
 }
 
 void
 Search::tnsIncr(Vertex *vertex,
-		float slack,
-		int min_max_index)
+		Slack slack,
+		PathAPIndex path_ap_index)
 {
-  if (fuzzyLess(slack, 0.0)) {
+  if (delayFuzzyLess(slack, 0.0)) {
     debugPrint2(debug_, "tns", 3, "tns+ %s %s\n",
 		delayAsString(slack, units_),
 		vertex->name(sdc_network_));
-    tns_[min_max_index] += slack;
-    if (tns_slacks_[min_max_index].hasKey(vertex))
+    tns_[path_ap_index] += slack;
+    if (tns_slacks_[path_ap_index].hasKey(vertex))
       internalError("tns incr existing vertex");
-    tns_slacks_[min_max_index][vertex] = slack;
+    tns_slacks_[path_ap_index][vertex] = slack;
   }
 }
 
 void
 Search::tnsDecr(Vertex *vertex,
-		int min_max_index)
+		PathAPIndex path_ap_index)
 {
   Slack slack;
   bool found;
-  tns_slacks_[min_max_index].findKey(vertex, slack, found);
+  tns_slacks_[path_ap_index].findKey(vertex, slack, found);
   if (found
       && delayFuzzyLess(slack, 0.0)) {
     debugPrint2(debug_, "tns", 3, "tns- %s %s\n",
 		delayAsString(slack, units_),
 		vertex->name(sdc_network_));
-    tns_[min_max_index] -= delayAsFloat(slack);
-    tns_slacks_[min_max_index].eraseKey(vertex);
+    tns_[path_ap_index] -= delayAsFloat(slack);
+    tns_slacks_[path_ap_index].eraseKey(vertex);
   }
 }
 
@@ -3814,27 +3848,44 @@ Search::tnsNotifyBefore(Vertex *vertex)
 {
   if (tns_exists_
       && isEndpoint(vertex)) {
-    int min_index = MinMax::minIndex();
-    int max_index = MinMax::maxIndex();
-    tnsDecr(vertex, min_index);
-    tnsDecr(vertex, max_index);
+    int ap_count = corners_->pathAnalysisPtCount();
+    for (int i = 0; i < ap_count; i++) {
+      tnsDecr(vertex, i);
+    }
   }
 }
 
 ////////////////////////////////////////////////////////////////
 
-Slack
-Search::worstSlack(const MinMax *min_max)
+void
+Search::worstSlack(const MinMax *min_max,
+		   // Return values.
+		   Slack &worst_slack,
+		   Vertex *&worst_vertex)
 {
   worstSlackPreamble();
-  return worst_slacks_->worstSlack(min_max);
+  worst_slacks_->worstSlack(min_max, worst_slack, worst_vertex);
 }
 
-Vertex *
-Search::worstSlackVertex(const MinMax *min_max)
+void
+Search::worstSlack(const Corner *corner,
+		   const MinMax *min_max,
+		   // Return values.
+		   Slack &worst_slack,
+		   Vertex *&worst_vertex)
 {
   worstSlackPreamble();
-  return worst_slacks_->worstSlackVertex(min_max);
+  worst_slacks_->worstSlack(corner, min_max, worst_slack, worst_vertex);
+}
+
+void
+Search::worstSlackPreamble()
+{
+  wnsTnsPreamble();
+  if (worst_slacks_)
+    updateInvalidTns();
+  else
+    worst_slacks_ = new WorstSlacks(this);
 }
 
 void
@@ -3865,16 +3916,6 @@ Search::wnsTnsPreamble()
 }
 
 void
-Search::worstSlackPreamble()
-{
-  wnsTnsPreamble();
-  if (worst_slacks_)
-    updateInvalidTns();
-  else
-    worst_slacks_ = new WorstSlacks(this);
-}
-
-void
 Search::clearWorstSlack()
 {
   if (worst_slacks_) {
@@ -3889,17 +3930,17 @@ Search::clearWorstSlack()
 class FindEndSlackVisitor : public PathEndVisitor
 {
 public:
-  FindEndSlackVisitor(Slack *slacks,
+  FindEndSlackVisitor(SlackSeq &slacks,
 		      const StaState *sta);
   virtual PathEndVisitor *copy();
   virtual void visit(PathEnd *path_end);
 
 protected:
-  Slack *slacks_;
+  SlackSeq &slacks_;
   const StaState *sta_;
 };
 
-FindEndSlackVisitor::FindEndSlackVisitor(Slack *slacks,
+FindEndSlackVisitor::FindEndSlackVisitor(SlackSeq &slacks,
 					 const StaState *sta) :
   slacks_(slacks),
   sta_(sta)
@@ -3918,21 +3959,22 @@ FindEndSlackVisitor::visit(PathEnd *path_end)
 {
   if (!path_end->isUnconstrained()) {
     PathRef &path = path_end->pathRef();
-    int mm_index = path.minMax(sta_)->index();
+    PathAPIndex path_ap_index = path.pathAnalysisPtIndex(sta_);
     Slack slack = path_end->slack(sta_);
-    if (delayFuzzyLess(slack, slacks_[mm_index]))
-      slacks_[mm_index] = slack;
+    if (delayFuzzyLess(slack, slacks_[path_ap_index]))
+      slacks_[path_ap_index] = slack;
   }
 }
 
 void
 Search::wnsSlacks(Vertex *vertex,
 		  // Return values.
-		  Slack *slacks)
+		  SlackSeq &slacks)
 {
   Slack slack_init = MinMax::min()->initValue();
-  slacks[MinMax::minIndex()] = slack_init;
-  slacks[MinMax::maxIndex()] = slack_init;
+  PathAPIndex path_ap_count = corners_->pathAnalysisPtCount();
+  for (PathAPIndex i = 0; i < path_ap_count; i++)
+    slacks[i] = slack_init;
   if (hasFanout(vertex, search_adj_, graph_)) {
     // If the vertex has fanout the path slacks include downstream
     // PathEnd slacks so find the endpoint slack directly.
@@ -3943,23 +3985,23 @@ Search::wnsSlacks(Vertex *vertex,
     VertexPathIterator path_iter(vertex, this);
     while (path_iter.hasNext()) {
       Path *path = path_iter.next();
-      const MinMax *path_min_max = path->minMax(this);
-      int path_mm_index = path_min_max->index();
+      PathAPIndex path_ap_index = path->pathAnalysisPtIndex(this);
       const Slack path_slack = path->slack(this);
       if (!path->tag(this)->isFilter()
-	  && delayFuzzyLess(path_slack, slacks[path_mm_index]))
-	slacks[path_mm_index] = path_slack;
+	  && delayFuzzyLess(path_slack, slacks[path_ap_index]))
+	slacks[path_ap_index] = path_slack;
     }
   }
 }
 
 Slack
 Search::wnsSlack(Vertex *vertex,
-		 const MinMax *min_max)
+		 PathAPIndex path_ap_index)
 {
-  Slack slacks[MinMax::index_count];
+  PathAPIndex path_ap_count = corners_->pathAnalysisPtCount();
+  SlackSeq slacks(path_ap_count);
   wnsSlacks(vertex, slacks);
-  return slacks[min_max->index()];
+  return slacks[path_ap_index];
 }
 
 ////////////////////////////////////////////////////////////////

@@ -148,6 +148,15 @@ AC_ARG_ENABLE(asan,
   esac],
   [asan=false])
 
+AC_ARG_ENABLE(ssta,
+  [AS_HELP_STRING([--enable-ssta],[enable ssta])],
+  [case "${enableval}" in
+    yes) ssta=true ;;
+    no)  ssta=false ;;
+    *) AC_MSG_ERROR(bad value ${enableval} for --enable-ssta) ;;
+  esac],
+  [ssta=false])
+
 AC_ARG_WITH(include,
   [AS_HELP_STRING([--with-include=dirs],[directories to search for include files])],
   [INCLUDE_DIRS="${withval}"],
@@ -187,6 +196,14 @@ AC_ARG_WITH(optimize,
   [AS_HELP_STRING([--with-optimize],[obsolete; optimization is on by default])],
   [],
   [])
+
+#--------------------------------------------------------------------
+
+if test x$ssta = xtrue; then
+   AC_DEFINE(SSTA, 1, "SSTA support")
+else
+   AC_DEFINE(SSTA, 0, "SSTA support")
+fi
 
 #--------------------------------------------------------------------
 # Locate the Tcl package
@@ -411,8 +428,8 @@ AC_FUNC_ERROR_AT_LINE
 #--------------------------------------------------------------------
 
 if test $CXX = clang++; then
-  # -Wno-deprecated-register to suppress warnings in flex files
-  CXXFLAGS="-std=c++11 -Wall -Wno-deprecated-register -Wcast-qual"
+  # suppress deprecated-register warnings in flex files.
+  CXXFLAGS="-std=c++11 -Wall -Wcast-qual -Wunused-parameter -Wno-deprecated-register"
   CXX_OPT="-O3"
   CXX_DEBUG="-g"
   CXX_ASAN="-fsanitize=address -O1 -fno-omit-frame-pointer"
@@ -532,9 +549,9 @@ STA_INCLUDE="-I.. -I../util -I../liberty -I../network -I../graph -I../sdc -I../s
 
 STA_LIBS="../search/libsearch.la ../sdf/libsdf.la ../graph/libgraph.la ../dcalc/libdcalc.la ../parasitics/libparasitics.la ../sdc/libsdc.la ../liberty/libliberty.la ../network/libnetwork.la ../util/libutil.la"
 
-SWIG_DEPEND="../tcl/StaException.i ../tcl/StaTcl.i ../tcl/NetworkEdit.i ../sdf/Sdf.i ../dcalc/DelayCalc.i ../parasitics/Parasitics.i ../tcl/StaTcl.i"
+SWIG_DEPEND="../tcl/StaException.i ../tcl/StaTcl.i ../tcl/NetworkEdit.i ../sdf/Sdf.i ../dcalc/DelayCalc.i ../parasitics/Parasitics.i"
 
-TCL_INIT_FILES="../tcl/Util.tcl ../dcalc/DelayCalc.tcl ../tcl/Graph.tcl ../tcl/Liberty.tcl ../tcl/Link.tcl ../tcl/Network.tcl ../tcl/NetworkEdit.tcl ../parasitics/Parasitics.tcl ../tcl/Sdc.tcl ../sdf/Sdf.tcl ../tcl/Search.tcl ../tcl/Cmds.tcl ../tcl/Variables.tcl ../tcl/Sta.tcl ../tcl/Splash.tcl"
+TCL_INIT_FILES="../tcl/Util.tcl ../dcalc/DelayCalc.tcl ../tcl/Graph.tcl ../tcl/Liberty.tcl ../tcl/Link.tcl ../tcl/Network.tcl ../tcl/NetworkEdit.tcl ../parasitics/Parasitics.tcl ../tcl/Sdc.tcl ../sdf/Sdf.tcl ../tcl/Search.tcl ../tcl/Cmds.tcl ../tcl/Variables.tcl ../tcl/Sta.tcl ../tcl/Power.tcl ../tcl/Splash.tcl"
 
 if test "$TCL_INCLUDE"; then
   STA_INCLUDE="$STA_INCLUDE -I$TCL_INCLUDE"

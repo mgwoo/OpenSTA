@@ -102,6 +102,7 @@ Sdc::Sdc(StaState *sta) :
   clk_sense_map_(network_),
   clk_gating_check_(NULL),
   input_delay_index_(0),
+  port_cap_map_(NULL),
   net_wire_cap_map_(NULL),
   drvr_pin_wire_cap_map_(NULL),
   first_from_pin_exceptions_(NULL),
@@ -314,12 +315,6 @@ Sdc::deleteConstraints()
     }
   }
 
-  delete net_wire_cap_map_;
-  net_wire_cap_map_ = NULL;
-
-  delete drvr_pin_wire_cap_map_;
-  drvr_pin_wire_cap_map_ = NULL;
-
   clk_hpin_disables_.deleteContentsClear();
   clk_hpin_disables_valid_ = false;
 
@@ -355,28 +350,22 @@ Sdc::deleteInstancePvts()
 void
 Sdc::removeNetLoadCaps()
 {
-  // set_load net
-  delete net_wire_cap_map_;
+  delete [] net_wire_cap_map_;
   net_wire_cap_map_ = NULL;
 
-  delete drvr_pin_wire_cap_map_;
+  delete [] drvr_pin_wire_cap_map_;
   drvr_pin_wire_cap_map_ = NULL;
 }
 
 void
 Sdc::removeLoadCaps()
 {
-  // set_load port
-  // set_fanout_load port
-  port_cap_map_.deleteContents();
-  port_cap_map_.clear();
-
-  // set_load net
-  delete net_wire_cap_map_;
-  net_wire_cap_map_ = NULL;
-
-  delete drvr_pin_wire_cap_map_;
-  drvr_pin_wire_cap_map_ = NULL;
+  if (port_cap_map_) {
+    port_cap_map_->deleteContents();
+    delete port_cap_map_;
+    port_cap_map_ = NULL;
+  }
+  removeNetLoadCaps();
 }
 
 void
@@ -412,14 +401,13 @@ Sdc::removeLibertyAnnotations()
     LibertyPortPairSet::Iterator from_to_iter(disable->fromTo());
     while (from_to_iter.hasNext()) {
       LibertyPortPair *pair = from_to_iter.next();
-      LibertyPort *from = pair->first;
-      LibertyPort *to = pair->second;
-      CellTimingArcSetIterator *arc_iter = cell->timingArcSetIterator(from, to);
-      while (arc_iter->hasNext()) {
-	TimingArcSet *arc_set = arc_iter->next();
+      const LibertyPort *from = pair->first;
+      const LibertyPort *to = pair->second;
+      LibertyCellTimingArcSetIterator arc_iter(cell, from, to);
+      while (arc_iter.hasNext()) {
+	TimingArcSet *arc_set = arc_iter.next();
 	arc_set->setIsDisabledConstraint(false);
       }
-      delete arc_iter;
     }
   }
 
@@ -470,7 +458,7 @@ Sdc::isConstrained(const Pin *pin) const
     || pin_cap_limit_map_.hasKey(pin1)
     || port_cap_limit_map_.hasKey(port)
     || port_fanout_limit_map_.hasKey(port)
-    || port_cap_map_.hasKey(port)
+    || hasPortExtCap(port)
     || disabled_pins_.hasKey(pin1)
     || disabled_ports_.hasKey(port)
     || disabled_clk_gating_checks_pin_.hasKey(pin1)
@@ -515,8 +503,7 @@ Sdc::isConstrained(const Net *net) const
   Net *net1 = const_cast<Net*>(net);
   return (net_derating_factors_
 	  && net_derating_factors_->hasKey(net))
-    || (net_wire_cap_map_
-	&& net_wire_cap_map_->hasKey(net1))
+    || hasNetWireCap(net1)
     || net_res_map_.hasKey(net1)
     || (first_thru_net_exceptions_
 	&& first_thru_net_exceptions_->hasKey(net));
@@ -2173,7 +2160,9 @@ Sdc::makeClkGroupSame(ClockGroup *group)
       Clock *clk2 = clk_iter2.next();
       if (clk1->index() <= clk2->index()) {
 	ClockPair *clk_pair = new ClockPair(clk1, clk2);
-	if (!clk_group_same_->hasKey(clk_pair))
+	if (clk_group_same_->hasKey(clk_pair))
+	  delete clk_pair;
+	else
 	  clk_group_same_->insert(clk_pair);
       }
     }
@@ -3254,9 +3243,9 @@ Sdc::deleteOutputDelay(OutputDelay *output_delay)
 
 void
 Sdc::setPortExtPinCap(Port *port,
-			      const TransRiseFall *tr,
-			      const MinMax *min_max,
-			      float cap)
+		      const TransRiseFall *tr,
+		      const MinMax *min_max,
+		      float cap)
 {
   PortExtCap *port_cap = ensurePortExtPinCap(port);
   port_cap->setPinCap(cap, tr, min_max);
@@ -3284,7 +3273,19 @@ Sdc::setPortExtWireCap(Port *port,
 PortExtCap *
 Sdc::portExtCap(Port *port) const
 {
-  return port_cap_map_.findKey(port);
+  if (port_cap_map_)
+    return port_cap_map_->findKey(port);
+  else
+    return NULL;
+}
+
+bool
+Sdc::hasPortExtCap(Port *port) const
+{
+  if (port_cap_map_)
+    return port_cap_map_->hasKey(port);
+  else
+    return false;
 }
 
 void
@@ -3299,20 +3300,21 @@ Sdc::portExtCap(Port *port,
 		int &fanout,
 		bool &has_fanout) const
 {
-  PortExtCap *port_cap = port_cap_map_.findKey(port);
-  if (port_cap) {
-    port_cap->pinCap(tr, min_max, pin_cap, has_pin_cap);
-    port_cap->wireCap(tr, min_max, wire_cap, has_wire_cap);
-    port_cap->fanout(min_max, fanout, has_fanout);
+  if (port_cap_map_) {
+    PortExtCap *port_cap = port_cap_map_->findKey(port);
+    if (port_cap) {
+      port_cap->pinCap(tr, min_max, pin_cap, has_pin_cap);
+      port_cap->wireCap(tr, min_max, wire_cap, has_wire_cap);
+      port_cap->fanout(min_max, fanout, has_fanout);
+      return;
+    }
   }
-  else {
-    pin_cap = 0.0F;
-    has_pin_cap = false;
-    wire_cap = 0.0F;
-    has_wire_cap = false;
-    fanout = 0.0F;
-    has_fanout = false;
-  }
+  pin_cap = 0.0F;
+  has_pin_cap = false;
+  wire_cap = 0.0F;
+  has_wire_cap = false;
+  fanout = 0.0F;
+  has_fanout = false;
 }
 
 float
@@ -3344,6 +3346,7 @@ Sdc::drvrPinHasWireCap(const Pin *pin)
 
 void
 Sdc::drvrPinWireCap(const Pin *pin,
+		    const Corner *corner,
 		    const MinMax *min_max,
 		    // Return values.
 		    float &cap,
@@ -3351,7 +3354,7 @@ Sdc::drvrPinWireCap(const Pin *pin,
 {
   if (drvr_pin_wire_cap_map_) {
     MinMaxFloatValues *values =
-      drvr_pin_wire_cap_map_->findKey(const_cast<Pin*>(pin));
+      drvr_pin_wire_cap_map_[corner->index()].findKey(const_cast<Pin*>(pin));
     if (values)
       return values->value(min_max, cap, exists);
   }
@@ -3384,20 +3387,36 @@ Sdc::setNetWireCap(Net *net,
     }
   }
   if (net_wire_cap_map_ == NULL)
-    net_wire_cap_map_ = new NetWireCapMap;
-  MinMaxFloatValues &values = (*net_wire_cap_map_)[net];
+    net_wire_cap_map_ = new NetWireCapMap[corners_->count()];
+  bool make_drvr_entry = net_wire_cap_map_[corner->index()].hasKey(net);
+  MinMaxFloatValues &values = net_wire_cap_map_[corner->index()][net];
   values.setValue(min_max, wire_cap);
 
-  NetConnectedPinIterator *pin_iter = network_->connectedPinIterator(net);
-  while (pin_iter->hasNext()) {
-    Pin *pin = pin_iter->next();
-    if (network_->isDriver(pin)) {
-      if (drvr_pin_wire_cap_map_ == NULL)
-	drvr_pin_wire_cap_map_ = new PinWireCapMap;
-      (*drvr_pin_wire_cap_map_)[pin] = &values;
+  // Only need to do this when there is new net_wire_cap_map_ entry.
+  if (make_drvr_entry) {
+    NetConnectedPinIterator *pin_iter = network_->connectedPinIterator(net);
+    while (pin_iter->hasNext()) {
+      Pin *pin = pin_iter->next();
+      if (network_->isDriver(pin)) {
+	if (drvr_pin_wire_cap_map_ == NULL)
+	  drvr_pin_wire_cap_map_ = new PinWireCapMap[corners_->count()];
+	drvr_pin_wire_cap_map_[corner->index()][pin] = &values;
+      }
+    }
+    delete pin_iter;
+  }
+}
+
+bool
+Sdc::hasNetWireCap(Net *net) const
+{
+  if (net_wire_cap_map_) {
+    for (int i = 0; i < corners_->count(); i++) {
+      if (net_wire_cap_map_[i].hasKey(net))
+	return true;
     }
   }
-  delete pin_iter;
+  return false;
 }
 
 ////////////////////////////////////////////////////////////////
@@ -3418,7 +3437,7 @@ Sdc::connectedCap(const Pin *pin,
 	  pin_cap, wire_cap, fanout, has_set_load);
   float net_wire_cap;
   bool has_net_wire_cap;
-  drvrPinWireCap(pin, min_max, net_wire_cap, has_net_wire_cap);
+  drvrPinWireCap(pin, corner, min_max, net_wire_cap, has_net_wire_cap);
   if (has_net_wire_cap) {
     wire_cap += net_wire_cap;
     has_set_load = true;
@@ -3494,7 +3513,7 @@ void
 FindNetCaps::operator()(Pin *pin)
 {
   sdc_->pinCaps(pin, tr_, op_cond_, corner_, min_max_,
-			pin_cap_, wire_cap_, fanout_, has_set_load_);
+		pin_cap_, wire_cap_, fanout_, has_set_load_);
 }
 
 // Capacitances for all pins connected to drvr_pin's net.
@@ -3635,7 +3654,7 @@ Sdc::portExtFanout(Port *port,
 		   int &fanout,
 		   bool &exists)
 {
-  PortExtCap *port_cap = port_cap_map_.findKey(port);
+  PortExtCap *port_cap = portExtCap(port);
   if (port_cap)
     port_cap->fanout(min_max, fanout, exists);
   else {
@@ -3660,10 +3679,12 @@ Sdc::portExtFanout(Port *port,
 PortExtCap *
 Sdc::ensurePortExtPinCap(Port *port)
 {
-  PortExtCap *port_cap = port_cap_map_.findKey(port);
+  if (port_cap_map_ == NULL)
+    port_cap_map_ = new PortExtCapMap;
+  PortExtCap *port_cap = port_cap_map_->findKey(port);
   if (port_cap == NULL) {
     port_cap = new PortExtCap(port);
-    port_cap_map_[port] = port_cap;
+    (*port_cap_map_)[port] = port_cap;
   }
   return port_cap;
 }
@@ -3682,12 +3703,11 @@ Sdc::disable(LibertyCell *cell,
   }
   if (from && to) {
     disabled_cell->setDisabledFromTo(from, to);
-    CellTimingArcSetIterator *arc_iter = cell->timingArcSetIterator(from, to);
-    while (arc_iter->hasNext()) {
-      TimingArcSet *arc_set = arc_iter->next();
+    LibertyCellTimingArcSetIterator arc_iter(cell, from, to);
+    while (arc_iter.hasNext()) {
+      TimingArcSet *arc_set = arc_iter.next();
       arc_set->setIsDisabledConstraint(true);
     }
-    delete arc_iter;
   }
   else if (from) {
     disabled_cell->setDisabledFrom(from);
@@ -3712,12 +3732,11 @@ Sdc::removeDisable(LibertyCell *cell,
   if (disabled_cell) {
     if (from && to) {
       disabled_cell->removeDisabledFromTo(from, to);
-      CellTimingArcSetIterator *arc_iter = cell->timingArcSetIterator(from, to);
-      while (arc_iter->hasNext()) {
-	TimingArcSet *arc_set = arc_iter->next();
+      LibertyCellTimingArcSetIterator arc_iter(cell, from, to);
+      while (arc_iter.hasNext()) {
+	TimingArcSet *arc_set = arc_iter.next();
 	arc_set->setIsDisabledConstraint(false);
       }
-      delete arc_iter;
     }
     else if (from) {
       disabled_cell->removeDisabledFrom(from);
@@ -4190,16 +4209,13 @@ Sdc::exceptionToInvalid(const Pin *pin)
   LibertyPort *port = network_->libertyPort(pin);
   if (port) {
     LibertyCell *cell = port->libertyCell();
-    CellTimingArcSetIterator *set_iter = cell->timingArcSetToIterator(port);
-    while (set_iter->hasNext()) {
-      TimingArcSet *set = set_iter->next();
+    LibertyCellTimingArcSetIterator set_iter(cell, NULL, port);
+    while (set_iter.hasNext()) {
+      TimingArcSet *set = set_iter.next();
       TimingRole *role = set->role();
-      if (role->genericRole() == TimingRole::regClkToQ()) {
-	delete set_iter;
+      if (role->genericRole() == TimingRole::regClkToQ())
 	return true;
-      }
     }
-    delete set_iter;
   }
   return false;
 }
@@ -4359,15 +4375,12 @@ Sdc::hasLibertyChecks(const Pin *pin)
   if (cell) {
     LibertyPort *port = network_->libertyPort(pin);
     if (port) {
-      CellTimingArcSetIterator *timing_iter=cell->timingArcSetToIterator(port);
-      while (timing_iter->hasNext()) {
-	TimingArcSet *arc_set = timing_iter->next();
-	if (arc_set->role()->isTimingCheck()) {
-	  delete timing_iter;
+      LibertyCellTimingArcSetIterator timing_iter(cell, NULL, port);
+      while (timing_iter.hasNext()) {
+	TimingArcSet *arc_set = timing_iter.next();
+	if (arc_set->role()->isTimingCheck())
 	  return true;
-	}
       }
-      delete timing_iter;
     }
   }
   return false;
@@ -6441,8 +6454,8 @@ Sdc::setEdgeDisabledInstPorts(DisabledPorts *disabled_port,
   LibertyPortPairSet::Iterator from_to_iter(disabled_port->fromTo());
   while (from_to_iter.hasNext()) {
     LibertyPortPair *pair = from_to_iter.next();
-    LibertyPort *from_port = pair->first;
-    LibertyPort *to_port = pair->second;
+    const LibertyPort *from_port = pair->first;
+    const LibertyPort *to_port = pair->second;
     Pin *from_pin = network_->findPin(inst, from_port);
     Pin *to_pin = network_->findPin(inst, to_port);
     if (from_pin && network_->direction(from_pin)->isAnyInput()

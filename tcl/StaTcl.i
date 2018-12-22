@@ -49,8 +49,6 @@
 #include "Transition.hh"
 #include "TimingRole.hh"
 #include "TimingArc.hh"
-#include "InternalPower.hh"
-#include "LeakagePower.hh"
 #include "EquivCells.hh"
 #include "Liberty.hh"
 #include "Network.hh"
@@ -67,6 +65,7 @@
 #include "Tag.hh"
 #include "PathVertex.hh"
 #include "PathRef.hh"
+#include "PathExpanded.hh"
 #include "PathEnd.hh"
 #include "PathGroup.hh"
 #include "CheckTiming.hh"
@@ -77,6 +76,7 @@
 #include "SearchPred.hh"
 #include "PathAnalysisPt.hh"
 #include "ReportPath.hh"
+#include "Power.hh"
 #include "Sta.hh"
 
 namespace sta {
@@ -97,7 +97,6 @@ typedef PinSet TmpPinSet;
 typedef PinSeq TmpPinSeq;
 typedef InstanceSeq TmpInstanceSeq;
 typedef InstanceSet TmpInstanceSet;
-typedef PathEndSeq::Iterator PathEndSeqIterator;
 typedef MinPulseWidthCheckSeq::Iterator MinPulseWidthCheckSeqIterator;
 typedef FloatSeq TmpFloatSeq;
 typedef string TmpString;
@@ -682,9 +681,9 @@ edgeDelayProperty(Edge *edge,
   ArcDelay delay = 0.0;
   bool delay_exists = false;
   TimingArcSet *arc_set = edge->timingArcSet();
-  TimingArcSetArcIterator *arc_iter = arc_set->timingArcIterator();
-  while (arc_iter->hasNext()) {
-    TimingArc *arc = arc_iter->next();
+  TimingArcSetArcIterator arc_iter(arc_set);
+  while (arc_iter.hasNext()) {
+    TimingArc *arc = arc_iter.next();
     TransRiseFall *to_tr = arc->toTrans()->asRiseFall();
     if (to_tr == tr) {
       CornerIterator corner_iter(sta);
@@ -693,12 +692,14 @@ edgeDelayProperty(Edge *edge,
 	DcalcAnalysisPt *dcalc_ap = corner->findDcalcAnalysisPt(min_max);
 	ArcDelay arc_delay = sta->arcDelay(edge, arc, dcalc_ap);
 	if (!delay_exists
-	    || min_max->compare(arc_delay, delay))
+	    || ((min_max == MinMax::max()
+		 && arc_delay > delay)
+		|| (min_max == MinMax::min()
+		    && arc_delay < delay)))
 	  delay = arc_delay;
       }
     }
   }
-  delete arc_iter;
   return sta->units()->timeUnit()->asString(delayAsFloat(delay), 8);
 }
 
@@ -820,6 +821,16 @@ findEndpoints()
   VertexPinCollector visitor(pins);
   Sta::sta()->visitEndpoints(&visitor);
   return pins;
+}
+
+void
+pushPowerResultFloats(PowerResult &power,
+		      TmpFloatSeq *floats)
+{
+  floats->push_back(power.internal());
+  floats->push_back(power.switching());
+  floats->push_back(power.leakage());
+  floats->push_back(power.total());
 }
 
 ////////////////////////////////////////////////////////////////
@@ -1510,11 +1521,11 @@ using namespace sta;
 %typemap(in) EarlyLate* {
   int length;
   char *arg = Tcl_GetStringFromObj($input, &length);
-  MinMax *min_max = MinMax::find(arg);
-  if (min_max)
-    $1 = min_max;
+  EarlyLate *early_late = EarlyLate::find(arg);
+  if (early_late)
+    $1 = early_late;
   else {
-    tclError(interp, "Error: %s not min or max.", arg);
+    tclError(interp, "Error: %s not early/min or late/max.", arg);
     return TCL_ERROR;
   }
 }
@@ -1523,11 +1534,11 @@ using namespace sta;
 %typemap(in) EarlyLateAll* {
   int length;
   char *arg = Tcl_GetStringFromObj($input, &length);
-  MinMaxAll *min_max = MinMaxAll::find(arg);
-  if (min_max)
-    $1 = min_max;
+  EarlyLateAll *early_late = EarlyLateAll::find(arg);
+  if (early_late)
+    $1 = early_late;
   else {
-    tclError(interp, "Error: %s not min, max or min_max.", arg);
+    tclError(interp, "Error: %s not early/min, late/max or early_late/min_max.", arg);
     return TCL_ERROR;
   }
 }
@@ -1585,7 +1596,7 @@ using namespace sta;
   else if (stringEq(arg, "short"))
     $1 = report_path_short;
   else if (stringEq(arg, "end"))
-    $1 = report_path_end;
+    $1 = report_path_endpoint;
   else if (stringEq(arg, "summary"))
     $1 = report_path_summary;
   else if (stringEq(arg, "slack_only"))
@@ -1735,27 +1746,7 @@ using namespace sta;
   Tcl_SetObjResult(interp, obj);
 }
 
-%typemap(out) InternalPower* {
-  Tcl_Obj *obj=SWIG_NewInstanceObj($1, $1_descriptor, false);
-  Tcl_SetObjResult(interp, obj);
-}
-
-%typemap(out) LibertyCellInternalPowerIterator* {
-  Tcl_Obj *obj=SWIG_NewInstanceObj($1, $1_descriptor, false);
-  Tcl_SetObjResult(interp, obj);
-}
-
-%typemap(out) LeakagePower* {
-  Tcl_Obj *obj=SWIG_NewInstanceObj($1, $1_descriptor, false);
-  Tcl_SetObjResult(interp, obj);
-}
-
-%typemap(out) LibertyCellLeakagePowerIterator* {
-  Tcl_Obj *obj=SWIG_NewInstanceObj($1, $1_descriptor, false);
-  Tcl_SetObjResult(interp, obj);
-}
-
-%typemap(out) CellTimingArcSetIterator* {
+%typemap(out) LibertyCellTimingArcSetIterator* {
   Tcl_Obj *obj=SWIG_NewInstanceObj($1, $1_descriptor, false);
   Tcl_SetObjResult(interp, obj);
 }
@@ -1788,11 +1779,17 @@ using namespace sta;
 %typemap(out) PathEndSeq* {
   Tcl_Obj *obj = SWIG_NewInstanceObj($1, $1_descriptor, false);
   Tcl_SetObjResult(interp, obj);
-}
 
-%typemap(out) PathEndSeqIterator* {
-  Tcl_Obj *obj = SWIG_NewInstanceObj($1, $1_descriptor, false);
-  Tcl_SetObjResult(interp, obj);
+  Tcl_Obj *list = Tcl_NewListObj(0, NULL);
+  const PathEndSeq *path_ends = $1;
+  PathEndSeq::ConstIterator end_iter(path_ends);
+  while (end_iter.hasNext()) {
+    PathEnd *path_end = end_iter.next();
+    Tcl_Obj *obj = SWIG_NewInstanceObj(path_end, SWIGTYPE_p_PathEnd, false);
+    Tcl_ListObjAppendElement(interp, list, obj);
+  }
+  delete path_ends;
+  Tcl_SetObjResult(interp, list);
 }
 
 %typemap(out) MinPulseWidthCheckSeqIterator* {
@@ -1809,6 +1806,22 @@ using namespace sta;
 %typemap(out) Path* {
   Tcl_Obj *obj = SWIG_NewInstanceObj($1, $1_descriptor, false);
   Tcl_SetObjResult(interp, obj);
+}
+
+%typemap(out) PathRefSeq* {
+  Tcl_Obj *obj = SWIG_NewInstanceObj($1, $1_descriptor, false);
+  Tcl_SetObjResult(interp, obj);
+
+  Tcl_Obj *list = Tcl_NewListObj(0, NULL);
+  PathRefSeq *paths = $1;
+  PathRefSeq::Iterator path_iter(paths);
+  while (path_iter.hasNext()) {
+    PathRef *path = &path_iter.next();
+    Tcl_Obj *obj = SWIG_NewInstanceObj(path, SWIGTYPE_p_PathRef, false);
+    Tcl_ListObjAppendElement(interp, list, obj);
+  }
+  delete paths;
+  Tcl_SetObjResult(interp, list);
 }
 
 %typemap(out) MinPulseWidthCheck* {
@@ -2002,39 +2015,11 @@ private:
   ~TimingArcSet();
 };
 
-class CellTimingArcSetIterator
+class LibertyCellTimingArcSetIterator
 {
 private:
-  CellTimingArcSetIterator();
-  ~CellTimingArcSetIterator();
-};
-
-class InternalPower
-{
-private:
-  InternalPower();
-  ~InternalPower();
-};
-
-class LibertyCellInternalPowerIterator
-{
-private:
-  LibertyCellInternalPowerIterator();
-  ~LibertyCellInternalPowerIterator();
-};
-
-class LeakagePower
-{
-private:
-  LeakagePower();
-  ~LeakagePower();
-};
-
-class LibertyCellLeakagePowerIterator
-{
-private:
-  LibertyCellLeakagePowerIterator();
-  ~LibertyCellLeakagePowerIterator();
+  LibertyCellTimingArcSetIterator();
+  ~LibertyCellTimingArcSetIterator();
 };
 
 class TimingArcSetArcIterator
@@ -2231,20 +2216,6 @@ class PathEnd
 private:
   PathEnd();
   ~PathEnd();
-};
-
-class PathEndSeq
-{
-private:
-  PathEnd();
-  ~PathEnd();
-};
-
-class PathEndSeqIterator
-{
-private:
-  PathEndSeqIterator();
-  ~PathEndSeqIterator();
 };
 
 class MinPulseWidthCheck
@@ -4450,6 +4421,31 @@ find_path_ends(ExceptionFrom *from,
 }
 
 void
+report_path_end_header()
+{
+  Sta::sta()->reportPathEndHeader();
+}
+
+void
+report_path_end_footer()
+{
+  Sta::sta()->reportPathEndFooter();
+}
+
+void
+report_path_end(PathEnd *end)
+{
+  Sta::sta()->reportPathEnd(end);
+}
+
+void
+report_path_end2(PathEnd *end,
+		 PathEnd *prev_end)
+{
+  Sta::sta()->reportPathEnd(end, prev_end);
+}
+
+void
 set_report_path_format(ReportPathFormat format)
 {
   Sta::sta()->setReportPathFormat(format);
@@ -4501,18 +4497,6 @@ set_report_path_no_split(bool no_split)
 }
 
 void
-report_path_ends(PathEndSeq *ends)
-{
-  Sta::sta()->reportPathEnds(ends);
-}
-
-void
-delete_path_ends(PathEndSeq *ends)
-{
-  delete ends;
-}
-
-void
 delete_path_ref(PathRef *path)
 {
   delete path;
@@ -4539,12 +4523,6 @@ report_clk_skew(ClockSet *clks,
   cmdLinkedNetwork();
   Sta::sta()->reportClkSkew(clks, corner, setup_hold, digits);
   delete clks;
-}
-
-PathEndSeqIterator *
-path_end_seq_iterator(PathEndSeq *ends)
-{
-  return new PathEndSeqIterator(ends);
 }
 
 TmpPinSet *
@@ -4702,7 +4680,7 @@ find_delays()
 }
 
 Slack
-total_negative_slack_cmd(MinMax *min_max)
+total_negative_slack_cmd(const MinMax *min_max)
 {
   cmdLinkedNetwork();
   Sta *sta = Sta::sta();
@@ -4710,19 +4688,35 @@ total_negative_slack_cmd(MinMax *min_max)
 }
 
 Slack
+total_negative_slack_corner_cmd(const Corner *corner,
+				const MinMax *min_max)
+{
+  cmdLinkedNetwork();
+  Sta *sta = Sta::sta();
+  return sta->totalNegativeSlack(corner, min_max);
+}
+
+Slack
 worst_slack(const MinMax *min_max)
 {
   cmdLinkedNetwork();
   Sta *sta = Sta::sta();
-  return sta->worstSlack(min_max);
+  Slack worst_slack;
+  Vertex *worst_vertex;
+  sta->worstSlack(min_max, worst_slack, worst_vertex);
+  return worst_slack;
 }
 
-Vertex *
-worst_slack_vertex(const MinMax *min_max)
+Slack
+worst_slack_corner(const Corner *corner,
+		   const MinMax *min_max)
 {
   cmdLinkedNetwork();
   Sta *sta = Sta::sta();
-  return sta->worstSlackVertex(min_max);
+  Slack worst_slack;
+  Vertex *worst_vertex;
+  sta->worstSlack(corner, min_max, worst_slack, worst_vertex);
+  return worst_slack;
 }
 
 PathRef *
@@ -4813,6 +4807,52 @@ report_slew_limit_verbose(Pin *pin,
 {
   Sta::sta()->reportSlewLimitVerbose(pin, corner, min_max);
 }
+
+////////////////////////////////////////////////////////////////
+
+TmpFloatSeq *
+design_power(const Corner *corner)
+{
+  cmdLinkedNetwork();
+  PowerResult total, sequential, combinational, macro, pad;
+  Sta::sta()->power(corner, total, sequential, combinational, macro, pad);
+  FloatSeq *floats = new FloatSeq;
+  pushPowerResultFloats(total, floats);
+  pushPowerResultFloats(sequential, floats);
+  pushPowerResultFloats(combinational, floats);
+  pushPowerResultFloats(macro, floats);
+  pushPowerResultFloats(pad, floats);
+  return floats;
+}
+
+TmpFloatSeq *
+instance_power(Instance *inst,
+	       const Corner *corner)
+{
+  cmdLinkedNetwork();
+  PowerResult power;
+  Sta::sta()->power(inst, corner, power);
+  FloatSeq *floats = new FloatSeq;
+  floats->push_back(power.internal());
+  floats->push_back(power.switching());
+  floats->push_back(power.leakage());
+  floats->push_back(power.total());
+  return floats;
+}
+
+float
+power_default_signal_toggle_rate()
+{
+  return Sta::sta()->power()->defaultSignalToggleRate();
+}
+
+void
+set_power_default_signal_toggle_rate(float rate)
+{
+  return Sta::sta()->power()->setDefaultSignalToggleRate(rate);
+}
+
+////////////////////////////////////////////////////////////////
 
 EdgeSeq *
 disabled_edges_sorted()
@@ -5339,6 +5379,7 @@ find_cells_matching(const char *pattern,
 %extend LibertyLibrary {
 
 const char *name() { return self->name(); }
+const char *filename() { return self->filename(); }
 const char *object_name() { return self->name(); }
 
 LibertyCell *
@@ -5451,16 +5492,10 @@ find_liberty_ports_matching(const char *pattern,
 }
 
 LibertyCellPortIterator *
-liberty_port_iterator() { return self->libertyPortIterator(); }
+liberty_port_iterator() { return new LibertyCellPortIterator(self); }
 
-CellTimingArcSetIterator *
-timing_arc_set_iterator() { return self->timingArcSetIterator(); }
-
-LibertyCellInternalPowerIterator *
-internal_power_iterator() { return self->internalPowerIterator(); }
-
-LibertyCellLeakagePowerIterator *
-leakage_power_iterator() { return self->leakagePowerIterator(); }
+LibertyCellTimingArcSetIterator *
+timing_arc_set_iterator() { return new LibertyCellTimingArcSetIterator(self); }
 
 } // LibertyCell methods
 
@@ -5497,7 +5532,7 @@ Cell *cell() { return self->cell(); }
 const char *object_name() { return self->name(); }
 bool is_bus() { return self->isBus(); }
 LibertyPortMemberIterator *
-member_iterator() { return self->libertyMemberIterator(); }
+member_iterator() { return new LibertyPortMemberIterator(self); }
 const char *
 direction() { return self->direction()->name(); }
 
@@ -5572,7 +5607,7 @@ object_name()
 
 } // TimingArcSet methods
 
-%extend CellTimingArcSetIterator {
+%extend LibertyCellTimingArcSetIterator {
 bool has_next() { return self->hasNext(); }
 TimingArcSet *next() { return self->next(); }
 void finish() { delete self; }
@@ -5591,61 +5626,6 @@ TimingRole *role() { return self->role(); }
 %extend TimingArcSetArcIterator {
 bool has_next() { return self->hasNext(); }
 TimingArc *next() { return self->next(); }
-void finish() { delete self; }
-}
-
-%extend InternalPower {
-LibertyPort *port() { return self->port(); }
-LibertyPort *related_port() { return self->relatedPort(); }
-
-const char *
-when()
-{
-  FuncExpr *when = self->when();
-  if (when)
-    return when->asString();
-  else
-    return "";
-}
-
-float
-power(TransRiseFall *tr,
-      float in_slew,
-      float load_cap)
-{
-  Sta *sta = Sta::sta();
-  Corner *corner = sta->corners()->defaultCorner();
-  DcalcAnalysisPt *dcalc_ap = corner->findDcalcAnalysisPt(MinMax::max());
-  const Pvt *pvt = dcalc_ap->operatingConditions();
-  return self->power(tr, pvt, in_slew, load_cap);
-}
-
-} // InternalPower methods
-
-%extend LibertyCellInternalPowerIterator {
-bool has_next() { return self->hasNext(); }
-InternalPower *next() { return self->next(); }
-void finish() { delete self; }
-}
-
-%extend LeakagePower {
-float power() { return self->power(); }
-
-const char *
-when()
-{
-  FuncExpr *when = self->when();
-  if (when)
-    return when->asString();
-  else
-    return "";
-}
-
-} // LeakagePower methods
-
-%extend LibertyCellLeakagePowerIterator {
-bool has_next() { return self->hasNext(); }
-LeakagePower *next() { return self->next(); }
 void finish() { delete self; }
 }
 
@@ -5954,9 +5934,31 @@ arrivals_clk(const TransRiseFall *tr,
   PathAnalysisPtIterator ap_iter(sta);
   while (ap_iter.hasNext()) {
     PathAnalysisPt *path_ap = ap_iter.next();
-    floats->push_back(delayAsFloat(sta->vertexArrival(self, tr, clk_edge, path_ap)));
+    floats->push_back(delayAsFloat(sta->vertexArrival(self, tr, clk_edge,
+						      path_ap)));
   }
   return floats;
+}
+
+TmpStringSeq *
+arrivals_clk_delays(const TransRiseFall *tr,
+		    Clock *clk,
+		    const TransRiseFall *clk_tr,
+		    int digits)
+{
+  Sta *sta = Sta::sta();
+  StringSeq *arrivals = new StringSeq;
+  const ClockEdge *clk_edge = NULL;
+  if (clk)
+    clk_edge = clk->edge(clk_tr);
+  PathAnalysisPtIterator ap_iter(sta);
+  while (ap_iter.hasNext()) {
+    PathAnalysisPt *path_ap = ap_iter.next();
+    arrivals->push_back(delayAsString(sta->vertexArrival(self, tr, clk_edge,
+							 path_ap),
+				      sta->units(), digits));
+  }
+  return arrivals;
 }
 
 TmpFloatSeq *
@@ -5972,9 +5974,31 @@ requireds_clk(const TransRiseFall *tr,
   PathAnalysisPtIterator ap_iter(sta);
   while (ap_iter.hasNext()) {
     PathAnalysisPt *path_ap = ap_iter.next();
-    floats->push_back(delayAsFloat(sta->vertexRequired(self,tr,clk_edge,path_ap)));
+    floats->push_back(delayAsFloat(sta->vertexRequired(self, tr, clk_edge,
+						       path_ap)));
   }
   return floats;
+}
+
+TmpStringSeq *
+requireds_clk_delays(const TransRiseFall *tr,
+		     Clock *clk,
+		     const TransRiseFall *clk_tr,
+		     int digits)
+{
+  Sta *sta = Sta::sta();
+  StringSeq *requireds = new StringSeq;
+  const ClockEdge *clk_edge = NULL;
+  if (clk)
+    clk_edge = clk->edge(clk_tr);
+  PathAnalysisPtIterator ap_iter(sta);
+  while (ap_iter.hasNext()) {
+    PathAnalysisPt *path_ap = ap_iter.next();
+    requireds->push_back(delayAsString(sta->vertexRequired(self, tr, clk_edge,
+							   path_ap),
+				       sta->units(), digits));
+  }
+  return requireds;
 }
 
 TmpFloatSeq *
@@ -6004,9 +6028,31 @@ slacks_clk(const TransRiseFall *tr,
   PathAnalysisPtIterator ap_iter(sta);
   while (ap_iter.hasNext()) {
     PathAnalysisPt *path_ap = ap_iter.next();
-    floats->push_back(delayAsFloat(sta->vertexSlack(self, tr, clk_edge, path_ap)));
+    floats->push_back(delayAsFloat(sta->vertexSlack(self, tr, clk_edge,
+						    path_ap)));
   }
   return floats;
+}
+
+TmpStringSeq *
+slacks_clk_delays(const TransRiseFall *tr,
+		  Clock *clk,
+		  const TransRiseFall *clk_tr,
+		  int digits)
+{
+  Sta *sta = Sta::sta();
+  StringSeq *slacks = new StringSeq;
+  const ClockEdge *clk_edge = NULL;
+  if (clk)
+    clk_edge = clk->edge(clk_tr);
+  PathAnalysisPtIterator ap_iter(sta);
+  while (ap_iter.hasNext()) {
+    PathAnalysisPt *path_ap = ap_iter.next();
+    slacks->push_back(delayAsString(sta->vertexSlack(self, tr, clk_edge,
+						     path_ap),
+				    sta->units(), digits));
+  }
+  return slacks;
 }
 
 VertexPathIterator *
@@ -6040,7 +6086,7 @@ Pin *to_pin() { return self->to(Sta::sta()->graph())->pin(); }
 TimingRole *role() { return self->role(); }
 const char *sense() { return timingSenseString(self->sense()); }
 TimingArcSetArcIterator *
-timing_arc_iterator() { return self->timingArcSet()->timingArcIterator(); }
+timing_arc_iterator() { return new TimingArcSetArcIterator(self->timingArcSet()); }
 bool is_disabled_loop() { return Sta::sta()->isDisabledLoop(self); }
 bool is_disabled_constraint() { return Sta::sta()->isDisabledConstraint(self);}
 bool is_disabled_constant() { return Sta::sta()->isDisabledConstant(self); }
@@ -6070,6 +6116,21 @@ arc_delays(TimingArc *arc)
   return floats;
 }
 
+TmpStringSeq *
+arc_delay_strings(TimingArc *arc,
+		  int digits)
+{
+  Sta *sta = Sta::sta();
+  StringSeq *delays = new StringSeq;
+  DcalcAnalysisPtIterator ap_iter(sta);
+  while (ap_iter.hasNext()) {
+    DcalcAnalysisPt *dcalc_ap = ap_iter.next();
+    delays->push_back(delayAsString(sta->arcDelay(self, arc, dcalc_ap),
+				    sta->units(), digits));
+  }
+  return delays;
+}
+
 bool
 delay_annotated(TimingArc *arc,
 		const Corner *corner,
@@ -6085,7 +6146,7 @@ arc_delay(TimingArc *arc,
 	  const MinMax *min_max)
 {
   DcalcAnalysisPt *dcalc_ap = corner->findDcalcAnalysisPt(min_max);
-  return Sta::sta()->arcDelay(self, arc, dcalc_ap);
+  return delayAsFloat(Sta::sta()->arcDelay(self, arc, dcalc_ap));
 }
 
 const char *
@@ -6204,21 +6265,61 @@ float inter_clk_uncertainty()
 Arrival target_clk_arrival() { return self->targetClkArrival(Sta::sta()); }
 bool path_delay_margin_is_external()
 { return self->pathDelayMarginIsExternal();}
-float common_clk_pessimism() { return self->commonClkPessimism(Sta::sta()); }
+Crpr common_clk_pessimism() { return self->commonClkPessimism(Sta::sta()); }
 TransRiseFall *target_clk_end_trans()
 { return const_cast<TransRiseFall*>(self->targetClkEndTrans(Sta::sta())); }
 
+Pin *
+startpoint()
+{
+  Sta *sta = Sta::sta();
+  PathExpanded expanded(self->path(), sta);
+  return expanded.startPath()->pin(sta);
 }
 
-%extend PathEndSeq {
-bool empty() { return self->empty(); }
-} // PathEndSeq methods
+Clock *
+startpoint_clock()
+{
+  Sta *sta = Sta::sta();
+  return self->path()->clock(sta);
+}
 
-%extend PathEndSeqIterator {
-bool has_next() { return self->hasNext(); }
-PathEnd *next() { return self->next(); }
-void finish() { delete self; }
-} // PathEndSeqIterator methods
+Pin *
+endpoint()
+{
+  Sta *sta = Sta::sta();
+  return self->path()->pin(sta);
+}
+
+Clock *
+endpoint_clock()
+{
+  Sta *sta = Sta::sta();
+  return self->targetClk(sta);
+}
+
+Pin *
+endpoint_clock_pin()
+{
+  Sta *sta = Sta::sta();
+  return self->targetClkPath()->pin(sta);
+}
+
+PathRefSeq *
+points()
+{
+  Sta *sta = Sta::sta();
+  PathExpanded expanded(self->path(), sta);
+  PathRefSeq *paths = new PathRefSeq;
+  for (int i = expanded.startIndex(); i < expanded.size(); i++) {
+    PathRef *path = expanded.path(i);
+    PathRef *copy = new PathRef(path);
+    paths->push_back(copy);
+  }
+  return paths;
+}
+
+}
 
 %extend MinPulseWidthCheckSeqIterator {
 bool has_next() { return self->hasNext(); }
@@ -6239,6 +6340,20 @@ required()
 {
   Sta *sta = Sta::sta();
   return delayAsFloat(self->required(sta));
+}
+
+float
+slack()
+{
+  Sta *sta = Sta::sta();
+  return delayAsFloat(self->slack(sta));
+}
+
+Pin *
+pin()
+{
+  Sta *sta = Sta::sta();
+  return self->pin(sta);
 }
 
 TmpPinSeq *

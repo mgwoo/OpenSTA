@@ -78,6 +78,7 @@ public:
   virtual void visitAttr(LibertyAttr *attr);
   virtual void visitTimeUnit(LibertyAttr *attr);
   virtual void visitCapacitiveLoadUnit(LibertyAttr *attr);
+  virtual void visitResistanceUnit(LibertyAttr *attr);
   virtual void visitPullingResistanceUnit(LibertyAttr *attr);
   virtual void visitVoltageUnit(LibertyAttr *attr);
   virtual void visitCurrentUnit(LibertyAttr *attr);
@@ -87,6 +88,7 @@ public:
 			  float &scale_var,
 			  Unit *unit_suffix);
   virtual void visitDelayModel(LibertyAttr *attr);
+  virtual void visitVoltageMap(LibertyAttr *attr);
   virtual void visitBusStyle(LibertyAttr *attr);
   virtual void visitNomTemp(LibertyAttr *attr);
   virtual void visitNomVolt(LibertyAttr *attr);
@@ -175,8 +177,11 @@ public:
   virtual void visitClockGatingIntegratedCell(LibertyAttr *attr);
   virtual void visitArea(LibertyAttr *attr);
   virtual void visitDontUse(LibertyAttr *attr);
-  void visitInterfaceTiming(LibertyAttr *attr);
+  virtual void visitIsMacro(LibertyAttr *attr);
+  virtual void visitIsPad(LibertyAttr *attr);
+  virtual void visitInterfaceTiming(LibertyAttr *attr);
   virtual void visitScalingFactors(LibertyAttr *attr);
+  virtual void visitCellLeakagePower(LibertyAttr *attr);
 
   virtual void beginPin(LibertyGroup *group);
   virtual void endPin(LibertyGroup *group);
@@ -222,6 +227,7 @@ public:
   virtual void visitClockGateOutPin(LibertyAttr *attr);
   void visitIsPllFeedbackPin(LibertyAttr *attr);
   virtual void visitSignalType(LibertyAttr *attr);
+  EarlyLateAll *getAttrEarlyLate(LibertyAttr *attr);
   virtual void visitClock(LibertyAttr *attr);
 
   virtual void beginScalingFactors(LibertyGroup *group);
@@ -353,6 +359,8 @@ public:
   virtual void beginFallPower(LibertyGroup *group);
   virtual void beginRisePower(LibertyGroup *group);
   virtual void endRiseFallPower(LibertyGroup *group);
+  virtual void visitRelatedPowerPin(LibertyAttr *attr);
+  virtual void visitRelatedPgPin(LibertyAttr *attr);
   virtual void makeInternalPowers(LibertyPort *port,
 				  InternalPowerGroup *power_group);
   virtual void makeInternalPowers(LibertyPort *port,
@@ -371,6 +379,15 @@ public:
   virtual void visitRfType(LibertyAttr *attr);
   virtual void visitDerateType(LibertyAttr *attr);
   virtual void visitPathType(LibertyAttr *attr);
+
+  // POCV attributes.
+  virtual void beginOcvSigmaCellRise(LibertyGroup *group);
+  virtual void beginOcvSigmaCellFall(LibertyGroup *group);
+  virtual void endOcvSigmaCell(LibertyGroup *group);
+  virtual void beginOcvSigmaRiseTransition(LibertyGroup *group);
+  virtual void beginOcvSigmaFallTransition(LibertyGroup *group);
+  virtual void endOcvSigmaTransition(LibertyGroup *group);
+  virtual void visitSigmaType(LibertyAttr *attr);
 
   // Visitors for derived classes to overload.
   virtual void beginGroup1(LibertyGroup *) {}
@@ -513,7 +530,8 @@ protected:
   TransRiseFall *tr_;
   OcvDerate *ocv_derate_;
   TransRiseFallBoth *rf_type_;
-  EarlyLateAll *early_late_;
+  EarlyLateAll *derate_type_;
+  EarlyLateAll *sigma_type_;
   PathType path_type_;
   ScaleFactorType scale_factor_type_;
   TableAxis *axis_[3];
@@ -529,6 +547,8 @@ protected:
   float volt_scale_;
   float curr_scale_;
   float power_scale_;
+  float energy_scale_;
+  bool have_resistance_unit_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(LibertyReader);
@@ -688,6 +708,12 @@ public:
 		     TableModel *model);
   void makeTimingModels(LibertyLibrary *library,
 			LibertyReader *visitor);
+  void setDelaySigma(TransRiseFall *tr,
+		     EarlyLate *early_late,
+		     TableModel *model);
+  void setSlewSigma(TransRiseFall *tr,
+		    EarlyLate *early_late,
+		    TableModel *model);
 
 protected:
   void makeLinearModels(LibertyLibrary *library);
@@ -701,6 +727,8 @@ protected:
   TableModel *cell_[TransRiseFall::index_count];
   TableModel *constraint_[TransRiseFall::index_count];
   TableModel *transition_[TransRiseFall::index_count];
+  TableModel *delay_sigma_[TransRiseFall::index_count][EarlyLate::index_count];
+  TableModel *slew_sigma_[TransRiseFall::index_count][EarlyLate::index_count];
 
 private:
   DISALLOW_COPY_AND_ASSIGN(TimingGroup);

@@ -18,6 +18,7 @@
 #include "FuncExpr.hh"
 #include "TimingRole.hh"
 #include "Liberty.hh"
+#include "TimingModel.hh"
 #include "TimingArc.hh"
 
 namespace sta {
@@ -40,29 +41,30 @@ TimingArcAttrs::TimingArcAttrs() :
   sdf_cond_end_(NULL),
   mode_name_(NULL),
   mode_value_(NULL),
-  ocv_arc_depth_(0.0)
+  ocv_arc_depth_(0.0),
+  models_{NULL, NULL}
 {
-  TransRiseFallIterator tr_iter;
-  while (tr_iter.hasNext()) {
-    TransRiseFall *tr = tr_iter.next();
-    int tr_index = tr->index();
-    models_[tr_index] = NULL;
-    model_refs_[tr_index] = false;
-  }
 }
 
+// Destructor does NOT delete contents because it is a component
+// of TimingGroup (that is deleted after building the LibertyCell)
+// and (potentially) multiple TimingArcSets.
 TimingArcAttrs::~TimingArcAttrs()
 {
-  if (sdf_cond_)
-    stringDelete(sdf_cond_);
-  if (sdf_cond_start_)
-    stringDelete(sdf_cond_start_);
-  if (sdf_cond_end_)
-    stringDelete(sdf_cond_end_);
-  if (mode_name_)
-    stringDelete(mode_name_);
-  if (mode_value_)
-    stringDelete(mode_value_);
+}
+
+void
+TimingArcAttrs::deleteContents()
+{
+  if (cond_)
+    cond_->deleteSubexprs();
+  stringDelete(sdf_cond_);
+  stringDelete(sdf_cond_start_);
+  stringDelete(sdf_cond_end_);
+  stringDelete(mode_name_);
+  stringDelete(mode_value_);
+  delete models_[0];
+  delete models_[1];
 }
 
 void
@@ -125,19 +127,6 @@ TimingArcAttrs::setModel(TransRiseFall *tr,
   models_[tr->index()] = model;
 }
 
-bool
-TimingArcAttrs::modelRef(TransRiseFall *tr) const
-{
-  return model_refs_[tr->index()];
-}
-
-void
-TimingArcAttrs::setModelRef(TransRiseFall *tr,
-			    bool ref)
-{
-  model_refs_[tr->index()] = ref;
-}
-
 void
 TimingArcAttrs::setOcvArcDepth(float depth)
 {
@@ -160,6 +149,28 @@ TimingArcSet::TimingArcSet(LibertyCell *cell,
   role_(role),
   cond_(attrs->cond()),
   is_cond_default_(false),
+  sdf_cond_start_(attrs->sdfCondStart()),
+  sdf_cond_end_(attrs->sdfCondEnd()),
+  mode_name_(attrs->modeName()),
+  mode_value_(attrs->modeValue()),
+  ocv_arc_depth_(attrs->ocvArcDepth()),
+  index_(0),
+  is_disabled_constraint_(false)
+{
+  const char *sdf_cond = attrs->sdfCond();
+  if (sdf_cond)
+    sdf_cond_start_ = sdf_cond_end_ = sdf_cond;
+
+  init(cell);
+}
+
+TimingArcSet::TimingArcSet(TimingRole *role) :
+  from_(NULL),
+  to_(NULL),
+  related_out_(NULL),
+  role_(role),
+  cond_(NULL),
+  is_cond_default_(false),
   sdf_cond_start_(NULL),
   sdf_cond_end_(NULL),
   mode_name_(NULL),
@@ -167,51 +178,7 @@ TimingArcSet::TimingArcSet(LibertyCell *cell,
   index_(0),
   is_disabled_constraint_(false)
 {
-  const char *sdf_cond = attrs->sdfCond();
-  const char *sdf_cond_start = attrs->sdfCondStart();
-  const char *sdf_cond_end = attrs->sdfCondEnd();
-  if (sdf_cond)
-    sdf_cond_start = sdf_cond_end = sdf_cond;
-  if (sdf_cond_start)
-    sdf_cond_start_ = stringCopy(sdf_cond_start);
-  if (sdf_cond_end)
-    sdf_cond_end_ = stringCopy(sdf_cond_end);
-
-  const char *mode_name = attrs->modeName();
-  if (mode_name)
-    mode_name_ = stringCopy(mode_name);
-  const char *mode_value = attrs->modeValue();
-  if (mode_value)
-    mode_value_ = stringCopy(mode_value);
-  ocv_arc_depth_ = attrs->ocvArcDepth();
-
-  init(cell);
-}
-
-TimingArcSet::TimingArcSet(LibertyCell *cell,
-			   LibertyPort *from,
-			   LibertyPort *to,
-			   LibertyPort *related_out,
-			   TimingRole *role,
-			   FuncExpr *cond,
-			   const char *sdf_cond_start,
-			   const char *sdf_cond_end,
-			   const char *mode_name,
-			   const char *mode_value) :
-  from_(from),
-  to_(to),
-  related_out_(related_out),
-  role_(role),
-  cond_(cond),
-  is_cond_default_(false),
-  sdf_cond_start_(stringCopy(sdf_cond_start)),
-  sdf_cond_end_(stringCopy(sdf_cond_end)),
-  mode_name_(stringCopy(mode_name)),
-  mode_value_(stringCopy(mode_value)),
-  index_(0),
-  is_disabled_constraint_(false)
-{
-  init(cell);
+  init(NULL);
 }
 
 void
@@ -300,12 +267,6 @@ TimingArcSet::setIsCondDefault(bool is_default)
   is_cond_default_ = is_default;
 }
 
-TimingArcSetArcIterator *
-TimingArcSet::timingArcIterator() const
-{
-  return new TimingArcSetArcIterator(this);
-}
-
 void
 TimingArcSet::arcsFrom(const TransRiseFall *from_tr,
 		       // Return values.
@@ -390,21 +351,15 @@ static bool
 timingArcsEquiv(const TimingArcSet *set1,
 		const TimingArcSet *set2)
 {
-  TimingArcSetArcIterator *arc_iter1 = set1->timingArcIterator();
-  TimingArcSetArcIterator *arc_iter2 = set2->timingArcIterator();
-  while (arc_iter1->hasNext() && arc_iter2->hasNext()) {
-    TimingArc *arc1 = arc_iter1->next();
-    TimingArc *arc2 = arc_iter2->next();
-    if (!TimingArc::equiv(arc1, arc2)) {
-      delete arc_iter1;
-      delete arc_iter2;
+  TimingArcSetArcIterator arc_iter1(set1);
+  TimingArcSetArcIterator arc_iter2(set2);
+  while (arc_iter1.hasNext() && arc_iter2.hasNext()) {
+    TimingArc *arc1 = arc_iter1.next();
+    TimingArc *arc2 = arc_iter2.next();
+    if (!TimingArc::equiv(arc1, arc2))
       return false;
-    }
   }
-  bool eq = !arc_iter1->hasNext() && !arc_iter2->hasNext();
-  delete arc_iter1;
-  delete arc_iter2;
-  return eq;
+  return !arc_iter1.hasNext() && !arc_iter2.hasNext();
 }
 
 bool
@@ -478,42 +433,27 @@ static bool
 timingArcsLess(const TimingArcSet *set1,
 	       const TimingArcSet *set2)
 {
-  TimingArcSetArcIterator *arc_iter1 = set1->timingArcIterator();
-  TimingArcSetArcIterator *arc_iter2 = set2->timingArcIterator();
-  while (arc_iter1->hasNext() && arc_iter2->hasNext()) {
-    TimingArc *arc1 = arc_iter1->next();
-    TimingArc *arc2 = arc_iter2->next();
+  TimingArcSetArcIterator arc_iter1(set1);
+  TimingArcSetArcIterator arc_iter2(set2);
+  while (arc_iter1.hasNext() && arc_iter2.hasNext()) {
+    TimingArc *arc1 = arc_iter1.next();
+    TimingArc *arc2 = arc_iter2.next();
     int from_index1 = arc1->fromTrans()->index();
     int from_index2 = arc2->fromTrans()->index();
-    if (from_index1 < from_index2) {
-      delete arc_iter1;
-      delete arc_iter2;
+    if (from_index1 < from_index2)
       return true;
-    }
-    if (from_index1 > from_index2) {
-      delete arc_iter1;
-      delete arc_iter2;
+    if (from_index1 > from_index2)
       return false;
-    }
     // from_index1 == from_index2
     int to_index1 = arc1->toTrans()->index();
     int to_index2 = arc2->toTrans()->index();
-    if (to_index1 < to_index2) {
-      delete arc_iter1;
-      delete arc_iter2;
+    if (to_index1 < to_index2)
       return true;
-    }
-    if (to_index1 > to_index2) {
-      delete arc_iter1;
-      delete arc_iter2;
+    if (to_index1 > to_index2)
       return false;
-    }
     // Continue if arc transitions are equal.
   }
-  bool less = !arc_iter1->hasNext() && arc_iter2->hasNext();
-  delete arc_iter1;
-  delete arc_iter2;
-  return less;
+  return !arc_iter1.hasNext() && arc_iter2.hasNext();
 }
 
 ////////////////////////////////////////////////////////////////
@@ -527,9 +467,7 @@ TimingArcSet::wireArcIndex(const TransRiseFall *tr)
 void
 TimingArcSet::init()
 {
-  wire_timing_arc_set_ = new TimingArcSet(NULL,NULL,NULL,NULL,
-					  TimingRole::wire(),
-					  NULL, NULL, NULL, NULL, NULL);
+  wire_timing_arc_set_ = new TimingArcSet(TimingRole::wire());
   new TimingArc(wire_timing_arc_set_, Transition::rise(),
 		Transition::rise(), NULL);
   new TimingArc(wire_timing_arc_set_, Transition::fall(),

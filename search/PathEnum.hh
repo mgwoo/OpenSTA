@@ -41,15 +41,11 @@ class DiversionGreater
 {
 public:
   DiversionGreater();
-  DiversionGreater(bool cmp_slack,
-		   const MinMax *min_max,
-		   StaState *sta);
+  DiversionGreater(const StaState *sta);
   bool operator()(Diversion *div1,
 		  Diversion *div2) const;
 
 private:
-  bool cmp_slack_;
-  const MinMax *min_max_;
   const StaState *sta_;
 };
 
@@ -61,7 +57,6 @@ public:
 	   int endpoint_count,
 	   bool unique_pins,
 	   bool cmp_slack,
-	   const MinMax *min_max,
 	   const StaState *sta);
   // Insert path ends that are enumerated in slack/arrival order.
   void insert(PathEnd *path_end);

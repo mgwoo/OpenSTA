@@ -25,7 +25,42 @@ namespace eval sta {
 define_cmd_args "report_arrival" {pin}
 
 proc report_arrival { pin } {
-  report_wrt_clks $pin "arrivals_clk"
+  report_delays_wrt_clks $pin "arrivals_clk_delays"
+}
+
+proc report_delays_wrt_clks { pin_arg what } {
+  set pin [get_port_pin_error "pin" $pin_arg]
+  foreach vertex [$pin vertices] {
+    if { $vertex != "NULL" } {
+      report_delays_wrt_clk $vertex $what "NULL" "rise"
+      report_delays_wrt_clk $vertex $what [default_arrival_clock] "rise"
+      set clk_iter [clock_iterator]
+      while {[$clk_iter has_next]} {
+	set clk [$clk_iter next]
+	report_delays_wrt_clk $vertex $what $clk "rise"
+	report_delays_wrt_clk $vertex $what $clk "fall"
+      }
+      $clk_iter finish
+    }
+  }
+}
+
+proc report_delays_wrt_clk { vertex what clk clk_tr } {
+  global sta_report_default_digits
+
+  set rise [$vertex $what rise $clk $clk_tr $sta_report_default_digits]
+  set fall [$vertex $what fall $clk $clk_tr $sta_report_default_digits]
+  # Filter INF/-INF arrivals.
+  if { !([delays_are_inf $rise] && [delays_are_inf $fall]) } {
+    set rise_fmt [format_delays $rise]
+    set fall_fmt [format_delays $fall]
+    if {$clk != "NULL"} {
+      set clk_str " ([$clk name] [rise_fall_short_name $clk_tr])"
+    } else {
+      set clk_str ""
+    }
+    puts "$clk_str r $rise_fmt f $fall_fmt"
+  }
 }
 
 proc report_wrt_clks { pin_arg what } {
@@ -76,6 +111,16 @@ proc rise_fall_short_name { tr } {
 proc times_are_inf { times } {
   foreach time $times {
     if { $time < 1e+10 && $time > -1e+10 } {
+      return 0
+    }
+  }
+  return 1
+}
+
+proc delays_are_inf { delays } {
+  foreach delay $delays {
+    if { !([string match "INF*" $delay] \
+	     || [string match "-INF*" $delay]) } {
       return 0
     }
   }
@@ -221,7 +266,7 @@ proc parse_report_path_options { cmd args_var default_format
 define_cmd_args "report_required" {pin}
 
 proc report_required { pin } {
-  report_wrt_clks $pin "requireds_clk"
+  report_delays_wrt_clks $pin "requireds_clk_delays"
 }
 
 ################################################################
@@ -229,7 +274,7 @@ proc report_required { pin } {
 define_cmd_args "report_slack" {pin}
 
 proc report_slack { pin } {
-  report_wrt_clks $pin "slacks_clk"
+  report_delays_wrt_clks $pin "slacks_clk_delays"
 }
 
 ################################################################
@@ -244,25 +289,39 @@ proc report_tag_arrivals { pin } {
 
 ################################################################
 
-define_hidden_cmd_args "total_negative_slack" {[-min]|[-max]}
+define_hidden_cmd_args "total_negative_slack" \
+  {[-corner corner] [-min]|[-max]}
 
 proc total_negative_slack { args } {
-  parse_key_args "total_negative_slack" args keys {} flags {-min -max}
+  parse_key_args "total_negative_slack" args \
+    keys {-corner} flags {-min -max}
   check_argc_eq0 "total_negative_slack" $args
   set min_max [parse_min_max_flags flags]
-  set tns [total_negative_slack_cmd $min_max]
+  if { [info exists keys(-corner)] } {
+    set corner [parse_corner_required keys]
+    set tns [total_negative_slack_corner_cmd $corner $min_max]
+  } else {
+    set tns [total_negative_slack_cmd $min_max]
+  }
   return [time_sta_ui $tns]
 }
 
 ################################################################
 
-define_hidden_cmd_args "worst_negative_slack" {[-min]|[-max]}
+define_hidden_cmd_args "worst_negative_slack" \
+  {[-corner corner] [-min]|[-max]}
 
 proc worst_negative_slack { args } {
-  parse_key_args "total_negative_slack" args keys {} flags {-min -max}
+  parse_key_args "total_negative_slack" args \
+    keys {-corner} flags {-min -max}
   check_argc_eq0 "worst_negative_slack" $args
   set min_max [parse_min_max_flags flags]
-  set worst_slack [worst_slack $min_max]
+  if { [info exists keys(-corner)] } {
+    set corner [parse_corner_required keys]
+    set worst_slack [worst_slack_corner $corner $min_max]
+  } else {
+    set worst_slack [worst_slack $min_max]
+  }
   if { $worst_slack < 0.0 } {
     return [time_sta_ui $worst_slack]
   } else {
@@ -322,6 +381,16 @@ proc report_slew_limits { corner min_max all_violators verbose nosplit } {
       }
     }
   }
+}
+
+proc report_path_ends { path_ends } {
+  report_path_end_header
+  set prev_end "NULL"
+  foreach path_end $path_ends {
+    report_path_end2 $path_end $prev_end
+    set prev_end $path_end
+  }
+  report_path_end_footer
 }
 
 # sta namespace end.

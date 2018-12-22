@@ -67,6 +67,7 @@
 #include "VisitPathGroupVertices.hh"
 #include "SdfWriter.hh"
 #include "Genclks.hh"
+#include "Power.hh"
 #include "Sta.hh"
 
 namespace sta {
@@ -272,6 +273,7 @@ Sta::Sta() :
   check_max_skews_(NULL),
   clk_skews_(NULL),
   report_path_(NULL),
+  power_(NULL),
   link_make_black_boxes_(true),
   update_genclks_(false)
 {
@@ -348,6 +350,8 @@ Sta::updateComponentsState()
   report_path_->copyState(this);
   if (check_timing_)
     check_timing_->copyState(this);
+  if (power_)
+    power_->copyState(this);
 }
 
 void
@@ -467,6 +471,12 @@ Sta::makeReportPath()
 }
 
 void
+Sta::makePower()
+{
+  power_ = new Power(this);
+}
+
+void
 Sta::setSta(Sta *sta)
 {
   sta_ = sta;
@@ -505,6 +515,7 @@ Sta::~Sta()
   delete debug_;
   delete units_;
   delete report_;
+  delete power_;
 }
 
 void
@@ -1614,15 +1625,12 @@ hasDisabledArcs(Edge *edge,
 		Graph *graph)
 {
   TimingArcSet *arc_set = edge->timingArcSet();
-  TimingArcSetArcIterator *arc_iter = arc_set->timingArcIterator();
-  while (arc_iter->hasNext()) {
-    TimingArc *arc = arc_iter->next();
-    if (!searchThru(edge, arc, graph)) {
-      delete arc_iter;
+  TimingArcSetArcIterator arc_iter(arc_set);
+  while (arc_iter.hasNext()) {
+    TimingArc *arc = arc_iter.next();
+    if (!searchThru(edge, arc, graph))
       return true;
-    }
   }
-  delete arc_iter;
   return false;
 }
 
@@ -2458,6 +2466,31 @@ Sta::reportPathEnds(PathEndSeq *ends)
 }
 
 void
+Sta::reportPathEndHeader()
+{
+  report_path_->reportPathEndHeader();
+}
+
+void
+Sta::reportPathEndFooter()
+{
+  report_path_->reportPathEndFooter();
+}
+
+void
+Sta::reportPathEnd(PathEnd *end)
+{
+  report_path_->reportPathEnd(end);
+}
+
+void
+Sta::reportPathEnd(PathEnd *end,
+		   PathEnd *prev_end)
+{
+  report_path_->reportPathEnd(end, prev_end);
+}
+
+void
 Sta::reportPath(Path *path)
 {
   report_path_->reportPath(path);
@@ -2837,17 +2870,32 @@ Sta::totalNegativeSlack(const MinMax *min_max)
 }
 
 Slack
-Sta::worstSlack(const MinMax *min_max)
+Sta::totalNegativeSlack(const Corner *corner,
+			const MinMax *min_max)
 {
   searchPreamble();
-  return search_->worstSlack(min_max);
+  return search_->totalNegativeSlack(corner, min_max);
 }
 
-Vertex *
-Sta::worstSlackVertex(const MinMax *min_max)
+void
+Sta::worstSlack(const MinMax *min_max,
+		// Return values.
+		Slack &worst_slack,
+		Vertex *&worst_vertex)
 {
   searchPreamble();
-  return search_->worstSlackVertex(min_max);
+  return search_->worstSlack(min_max, worst_slack, worst_vertex);
+}
+
+void
+Sta::worstSlack(const Corner *corner,
+		const MinMax *min_max,
+		// Return values.
+		Slack &worst_slack,
+		Vertex *&worst_vertex)
+{
+  searchPreamble();
+  return search_->worstSlack(corner, min_max, worst_slack, worst_vertex);
 }
 
 ////////////////////////////////////////////////////////////////
@@ -3185,9 +3233,9 @@ Sta::portExtPinCap(Port *port,
   int fanout;
   bool pin_exists, wire_exists, fanout_exists;
   sdc_->portExtCap(port, tr, min_max,
-			   pin_cap, pin_exists,
-			   wire_cap, wire_exists,
-			   fanout, fanout_exists);
+		   pin_cap, pin_exists,
+		   wire_cap, wire_exists,
+		   fanout, fanout_exists);
   if (pin_exists)
     return pin_cap;
   else
@@ -3221,9 +3269,9 @@ Sta::portExtWireCap(Port *port,
   int fanout;
   bool pin_exists, wire_exists, fanout_exists;
   sdc_->portExtCap(port, tr, min_max,
-			   pin_cap, pin_exists,
-			   wire_cap, wire_exists,
-			   fanout, fanout_exists);
+		   pin_cap, pin_exists,
+		   wire_cap, wire_exists,
+		   fanout, fanout_exists);
   if (wire_exists)
     return wire_cap;
   else
@@ -3244,8 +3292,7 @@ Sta::setPortExtWireCap(Port *port,
     MinMaxIterator mm_iter(min_max);
     while (mm_iter.hasNext()) {
       MinMax *mm = mm_iter.next();
-      sdc_->setPortExtWireCap(port, subtract_pin_cap, tr1,
-				      corner, mm, cap);
+      sdc_->setPortExtWireCap(port, subtract_pin_cap, tr1, corner, mm, cap);
     }
   }
   delaysInvalidFromFanin(port);
@@ -3375,6 +3422,7 @@ Sta::readParasitics(const char *filename,
 		    Instance *instance,
 		    const MinMaxAll *min_max,
 		    bool increment,
+		    bool pin_cap_included,
 		    bool keep_coupling_caps,
 		    float coupling_cap_factor,
 		    ReduceParasiticsTo reduce_to,
@@ -3398,6 +3446,7 @@ Sta::readParasitics(const char *filename,
   const OperatingConditions *op_cond =
     sdc_->operatingConditions(cnst_min_max);
   bool success = readParasiticsFile(filename, instance, ap, increment,
+				    pin_cap_included,
 				    keep_coupling_caps, coupling_cap_factor,
 				    reduce_to, delete_after_reduce,
 				    op_cond, corner, cnst_min_max, save, quiet,
@@ -3612,16 +3661,15 @@ Sta::makeInstanceAfter(Instance *inst)
 {
   LibertyCell *lib_cell = network_->libertyCell(inst);
   if (lib_cell && lib_cell->hasInternalPorts()) {
-    LibertyCellPortBitIterator *port_iter = lib_cell->libertyPortBitIterator();
-    while (port_iter->hasNext()) {
-      LibertyPort *lib_port = port_iter->next();
+    LibertyCellPortBitIterator port_iter(lib_cell);
+    while (port_iter.hasNext()) {
+      LibertyPort *lib_port = port_iter.next();
       if (lib_port->direction()->isInternal()
 	  && lib_cell->hasTimingArcs(lib_port)) {
 	Pin *pin = network_->findPin(inst, lib_port);
 	connectPinAfter(pin);
       }
     }
-    delete port_iter;
   }
 }
 
@@ -4708,7 +4756,7 @@ Sta::reportSlewLimitVerbose(Pin *pin,
   Slew slew;
   float limit, slack;
   check_slew_limits_->checkSlews(pin, corner, min_max,
-				 corner, tr, slew, limit, slack);
+				 corner1, tr, slew, limit, slack);
   report_path_->reportSlewLimitVerbose(pin, corner1, tr, slew,
 				       limit, slack, min_max);
 }
@@ -4858,6 +4906,41 @@ Sta::reportCheck(MaxSkewCheck *check,
 		 bool verbose)
 {
   report_path_->reportCheck(check, verbose);
+}
+
+////////////////////////////////////////////////////////////////
+
+void
+Sta::powerPreamble()
+{
+  // Use arrivals to find clocking info.
+  searchPreamble();
+  search_->findAllArrivals();
+  if (power_ == NULL)
+    makePower();
+}
+
+void
+Sta::power(const Corner *corner,
+	   // Return values.
+	   PowerResult &total,
+	   PowerResult &sequential,
+	   PowerResult &combinational,
+	   PowerResult &macro,
+	   PowerResult &pad)
+{
+  powerPreamble();
+  power_->power(corner, total, sequential, combinational, macro, pad);
+}
+
+void
+Sta::power(const Instance *inst,
+	   const Corner *corner,
+	   // Return values.
+	   PowerResult &result)
+{
+  powerPreamble();
+  power_->power(inst, corner, result);
 }
 
 } // namespace

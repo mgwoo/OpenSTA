@@ -1228,6 +1228,9 @@ proc get_ports_or_pins { pattern } {
 
 ################################################################
 
+# If -corner keyword is missing:
+#  one corner: return default
+#  multiple corners: error
 proc parse_corner { keys_var } {
   upvar 1 $keys_var keys
 
@@ -1241,6 +1244,40 @@ proc parse_corner { keys_var } {
     }
   } elseif { [multi_corner] } {
     sta_error "-corner keyword required with multi-corner analysis."
+  } else {
+    return [default_corner]
+  }
+}
+
+# -corner keyword is required.
+# Assumes caller checks for existence of -corner keyword arg.
+proc parse_corner_required { keys_var } {
+  upvar 1 $keys_var keys
+
+  if { [info exists keys(-corner)] } {
+    set corner_name $keys(-corner)
+    set corner [find_corner $corner_name]
+    if { $corner == "NULL" } {
+      sta_error "$corner_name is not the name of process corner."
+    } else {
+      return $corner
+    }
+  } else {
+    sta_error "missing -corner arg."
+  }
+}
+
+proc parse_corner_or_default { keys_var } {
+  upvar 1 $keys_var keys
+
+  if { [info exists keys(-corner)] } {
+    set corner_name $keys(-corner)
+    set corner [find_corner $corner_name]
+    if { $corner == "NULL" } {
+      sta_error "$corner_name is not the name of process corner."
+    } else {
+      return $corner
+    }
   } else {
     return [default_corner]
   }
@@ -1756,6 +1793,10 @@ proc get_property_cmd { cmd type_key cmd_args } {
     return [liberty_library_property $object $attr]
   } elseif { $object_type == "Edge" } {
     return [edge_property $object $attr]
+  } elseif { $object_type == "PathEnd" } {
+    return [path_end_property $object $attr]
+  } elseif { $object_type == "PathRef" } {
+    return [path_ref_property $object $attr]
   } else {
     sta_error "$cmd unsupported object type $object_type."
   }
@@ -1795,6 +1836,40 @@ proc edge_property { edge property } {
     return [$edge to_pin]
   } else {
     return [edge_string_property $edge $property]
+  }
+}
+
+proc path_end_property { path_end property } {
+  if { $property == "points" } {
+    return [$path_end points]
+  } elseif { $property == "startpoint" } {
+    return [$path_end startpoint]
+  } elseif { $property == "startpoint_clock" } {
+    return [$path_end startpoint_clock]
+  } elseif { $property == "endpoint" } {
+    return [$path_end endpoint]
+  } elseif { $property == "endpoint_clock" } {
+    return [$path_end endpoint_clock]
+  } elseif { $property == "endpoint_clock_pin" } {
+    return [$path_end endpoint_clock_pin]
+  } elseif { $property == "slack" } {
+    return [time_sta_ui [$path_end slack]]
+  } else {
+    return ""
+  }
+}
+
+proc path_ref_property { path property } {
+  if { $property == "pin" } {
+    return [$path pin]
+  } elseif { $property == "arrival" } {
+    return [time_sta_ui [$path arrival]]
+  } elseif { $property == "required" } {
+    return [time_sta_ui [$path required]]
+  } elseif { $property == "slack" } {
+    return [time_sta_ui [$path slack]]
+  } else {
+    return ""
   }
 }
 

@@ -19,14 +19,15 @@ lib_LTLIBRARIES = libgraph.la
 include_HEADERS = \
 	Delay.hh \
 	DelayFloat.hh \
-	DelayFloatClass.hh \
+	DelayNormal2.hh \
 	Graph.hh \
 	GraphClass.hh \
 	GraphCmp.hh
 
 libgraph_la_SOURCES = \
+	Delay.cc \
 	DelayFloat.cc \
-	DelayFloatClass.cc \
+	DelayNormal2.cc \
 	Graph.cc \
 	GraphCmp.cc
 

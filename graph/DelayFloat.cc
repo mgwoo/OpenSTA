@@ -14,14 +14,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#include "config.h"
 #include "Machine.hh"
 #include "Fuzzy.hh"
 #include "Units.hh"
 #include "StaState.hh"
 #include "Delay.hh"
 
-// Conditional compilation based on delay abstraction from Delay.hh.
-#ifdef DELAY_FLOAT
+// Non-SSTA compilation.
+#if !SSTA
 
 namespace sta {
 
@@ -45,6 +46,12 @@ delayIsInitValue(const Delay &delay,
 		 const MinMax *min_max)
 {
   return fuzzyEqual(delay, min_max->initValue());
+}
+
+float
+delayAsFloat(const Delay &delay)
+{
+  return delay;
 }
 
 bool
@@ -141,16 +148,41 @@ delayRatio(const Delay &delay1,
 
 const char *
 delayAsString(const Delay &delay,
-	      Units *units)
+	      const Units *units,
+	      int digits)
 {
-  return units->timeUnit()->asString(delay);
+  return units->timeUnit()->asString(delay, digits);
+}
+
+float
+delayAsFloat(const Delay &delay,
+	     const EarlyLate *)
+{
+  return delay;
 }
 
 const char *
 delayAsString(const Delay &delay,
-	      const StaState *sta)
+	      const EarlyLate *,
+	      const Units *units,
+	      int digits)
 {
-  return delayAsString(delay, sta->units());
+  const Unit *unit = units->timeUnit();
+  return unit->asString(delay, digits);
+}
+
+float
+delaySigma(const Delay &,
+	   const EarlyLate *)
+{
+  return 0.0;
+}
+
+float
+delaySigma2(const Delay &,
+	   const EarlyLate *)
+{
+  return 0.0;
 }
 
 } // namespace
